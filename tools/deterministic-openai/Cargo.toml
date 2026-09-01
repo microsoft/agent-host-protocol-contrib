@@ -1,0 +1,16 @@
+[package]
+name = "deterministic-openai"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic local OpenAI-compatible fixture for AHP sample tests."
+
+[lints]
+workspace = true
+
+[dependencies]
+deterministic-openai-fixture = { path = "../../crates/deterministic-openai" }
+clap.workspace = true
+tokio.workspace = true

@@ -1,0 +1,40 @@
+[package]
+name = "advanced-workspace-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Advanced composition root for a persistent workspace Agent Host Protocol server."
+
+[lints]
+workspace = true
+
+[lib]
+name = "advanced_workspace_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "advanced-workspace-host"
+path = "src/main.rs"
+
+[dependencies]
+ahp-server-core = { path = "../../../crates/ahp-server-core" }
+ahp-server-redb = { path = "../../../crates/ahp-server-redb" }
+ahp-server-ws = { path = "../../../crates/ahp-server-ws" }
+axum.workspace = true
+clap.workspace = true
+deterministic-openai-fixture = { path = "../../../crates/deterministic-openai" }
+openai-agent-model = { path = "../../../crates/openai-agent-model" }
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+workspace-agent-tools = { path = "../../../crates/workspace-agent-tools" }
+
+[dev-dependencies]
+futures-util.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tokio-tungstenite.workspace = true
+tower.workspace = true
+uuid.workspace = true

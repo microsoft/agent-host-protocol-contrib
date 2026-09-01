@@ -1,0 +1,22 @@
+[package]
+name = "ahp-server-redb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "redb-backed durable HostStore for Agent Host Protocol servers."
+
+[lints]
+workspace = true
+
+[dependencies]
+ahp-server-core = { path = "../ahp-server-core" }
+ahp-types.workspace = true
+chrono.workspace = true
+redb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true

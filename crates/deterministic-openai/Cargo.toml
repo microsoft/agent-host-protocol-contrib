@@ -1,0 +1,27 @@
+[package]
+name = "deterministic-openai-fixture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic OpenAI-compatible HTTP fixture for tests."
+
+[lib]
+name = "deterministic_openai"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-stream.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tokio.workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "ahp-server-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Transport-independent lifecycle core for Agent Host Protocol servers."
+
+[lints]
+workspace = true
+
+[dependencies]
+ahp-types.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+openai-agent-model = { path = "../openai-agent-model" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+workspace-agent-tools = { path = "../workspace-agent-tools" }

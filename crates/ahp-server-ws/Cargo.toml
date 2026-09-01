@@ -1,0 +1,23 @@
+[package]
+name = "ahp-server-ws"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Axum WebSocket transport and Origin policy for ahp-server-core."
+
+[lints]
+workspace = true
+
+[dependencies]
+ahp-server-core = { path = "../ahp-server-core" }
+axum.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tokio-tungstenite.workspace = true
