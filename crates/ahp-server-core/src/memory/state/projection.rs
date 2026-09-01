@@ -3,8 +3,8 @@
 use ahp_types::common::ROOT_RESOURCE_URI;
 use ahp_types::state::{
     ActiveTurn, AgentCapabilities, AgentInfo, ChatState, ChatSummary, MultipleChatsCapability,
-    RootState, SessionLifecycle, SessionModelInfo, SessionState, SessionStatus, SessionSummary,
-    Snapshot, SnapshotState, Turn, TurnState,
+    RootState, SessionLifecycle, SessionState, SessionStatus, SessionSummary, Snapshot,
+    SnapshotState, Turn, TurnState,
 };
 
 use super::{Active, Chat, Data, Session, StoredTurn};
@@ -105,18 +105,7 @@ fn root_snapshot(data: &Data, request: SnapshotRequest, from_seq: i64) -> Snapsh
                 provider: "openai".into(),
                 display_name: "OpenAI-compatible".into(),
                 description: "A streaming OpenAI-compatible agent.".into(),
-                models: vec![SessionModelInfo {
-                    id: request.model_name.clone(),
-                    provider: "openai".into(),
-                    name: request.model_name,
-                    max_context_window: None,
-                    max_output_tokens: None,
-                    max_prompt_tokens: None,
-                    supports_vision: None,
-                    policy_state: None,
-                    config_schema: None,
-                    meta: None,
-                }],
+                models: request.model_catalog.models.clone(),
                 protected_resources: None,
                 customizations: None,
                 capabilities: Some(AgentCapabilities {
@@ -166,7 +155,11 @@ fn session_snapshot(
             active_clients: Vec::new(),
             chats,
             default_chat: session.chats.first().cloned(),
-            config: None,
+            config: Some(
+                request
+                    .model_catalog
+                    .session_config_state(&session.model_selection),
+            ),
             customizations: None,
             changesets: None,
             input_needed: None,

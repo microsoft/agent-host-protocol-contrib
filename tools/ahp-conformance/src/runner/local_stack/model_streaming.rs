@@ -63,6 +63,7 @@ impl LocalStack {
             bind: host_bind,
             database_path: artifact.join("database").join("mock-host.redb"),
             model: ModelConfig::new(fixture.base_url(), "fixture-model").with_api(api),
+            discover_models: false,
             workspace_roots: vec![workspace_root],
             reset_shell_approvals: false,
             chunk_size: 11,

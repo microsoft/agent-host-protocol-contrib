@@ -1,11 +1,117 @@
 //! Public requests, events, replies, and errors.
 
+use std::fmt;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::time::Duration;
 
 use futures_util::Stream;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+
+/// A model advertised by an OpenAI-compatible model catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelDescriptor {
+    /// Provider model identifier.
+    pub id: String,
+    /// Provider account or organization that owns the model, when advertised.
+    pub owned_by: Option<String>,
+}
+
+/// Selects the model and optional reasoning effort for one request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSelection {
+    /// Model identifier sent for this request.
+    pub id: String,
+    /// Reasoning effort sent only when explicitly selected.
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+impl ModelSelection {
+    /// Creates a selection with no reasoning-effort override.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            reasoning_effort: None,
+        }
+    }
+
+    /// Adds a reasoning-effort override.
+    #[must_use]
+    pub const fn with_reasoning_effort(mut self, reasoning_effort: ReasoningEffort) -> Self {
+        self.reasoning_effort = Some(reasoning_effort);
+        self
+    }
+}
+
+/// Model-dependent reasoning effort requested for a completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    /// Disable reasoning tokens when the selected model supports that setting.
+    None,
+    /// Request minimal reasoning.
+    Minimal,
+    /// Request low reasoning.
+    Low,
+    /// Request medium reasoning.
+    Medium,
+    /// Request high reasoning.
+    High,
+    /// Request extra-high reasoning.
+    XHigh,
+    /// Request maximum reasoning.
+    Max,
+}
+
+impl ReasoningEffort {
+    /// Returns the OpenAI wire value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl fmt::Display for ReasoningEffort {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ReasoningEffort {
+    type Err = ReasoningEffortParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "minimal" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::XHigh),
+            "max" => Ok(Self::Max),
+            _ => Err(ReasoningEffortParseError {
+                value: value.to_owned(),
+            }),
+        }
+    }
+}
+
+/// An unsupported reasoning-effort value.
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+#[error("unknown reasoning effort {value:?}; use none, minimal, low, medium, high, xhigh, or max")]
+pub struct ReasoningEffortParseError {
+    /// The unrecognized value.
+    pub value: String,
+}
 
 /// One model completion request, including conversation state and tools.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,6 +120,8 @@ pub struct ModelRequest {
     pub messages: Vec<ModelMessage>,
     /// Function tools that the model may call.
     pub tools: Vec<ModelToolDefinition>,
+    /// Optional model and reasoning-effort override for this request.
+    pub model_selection: Option<ModelSelection>,
 }
 
 impl ModelRequest {
@@ -24,6 +132,29 @@ impl ModelRequest {
                 content: content.into(),
             }],
             tools: Vec::new(),
+            model_selection: None,
+        }
+    }
+
+    /// Adds a per-request model selection.
+    #[must_use]
+    pub fn with_model_selection(mut self, model_selection: ModelSelection) -> Self {
+        self.model_selection = Some(model_selection);
+        self
+    }
+
+    pub(crate) fn selected_model<'a>(
+        &'a self,
+        configured_model: &'a str,
+    ) -> Result<(&'a str, Option<ReasoningEffort>), ModelError> {
+        match &self.model_selection {
+            Some(selection) if selection.id.trim().is_empty() => {
+                Err(ModelError::InvalidModelSelection {
+                    reason: "model identifier must not be empty".to_owned(),
+                })
+            }
+            Some(selection) => Ok((&selection.id, selection.reasoning_effort)),
+            None => Ok((configured_model, None)),
         }
     }
 }
@@ -147,6 +278,12 @@ pub enum ModelError {
         /// Name of the invalid timeout setting.
         name: &'static str,
     },
+    /// A per-request model selection was invalid before HTTP dispatch.
+    #[error("invalid model selection: {reason}")]
+    InvalidModelSelection {
+        /// Validation failure.
+        reason: String,
+    },
     /// Connecting or waiting for the initial HTTP response headers took too
     /// long. This is not a total request timeout.
     #[error("OpenAI initial response timed out after {timeout:?}")]
@@ -172,6 +309,14 @@ pub enum ModelError {
         /// Bounded text captured from the returned error body.
         body: String,
     },
+    /// Model discovery is not supported by the configured endpoint.
+    #[error("OpenAI model discovery is unsupported (HTTP {status}): {body}")]
+    ModelsUnsupported {
+        /// Returned status code.
+        status: reqwest::StatusCode,
+        /// Bounded text captured from the returned error body.
+        body: String,
+    },
     /// A streamed API event reported a model failure.
     #[error("OpenAI {event} event: {message}")]
     StreamFailed {
@@ -184,3 +329,7 @@ pub enum ModelError {
     #[error("invalid OpenAI response: {0}")]
     InvalidResponse(String),
 }
+
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;

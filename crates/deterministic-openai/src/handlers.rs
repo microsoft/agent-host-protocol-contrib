@@ -5,7 +5,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::chat_stream;
 use super::contract::{code, split_chunks, ContractError};
@@ -16,17 +16,19 @@ use super::responses_stream;
 use super::v1::FixtureSpec;
 use super::v2::{self, V2Action, V2FixtureSpec};
 use super::{
-    FixtureState, CHAT_COMPLETION_ID, RESPONSES_ID, V2_CHAT_COMPLETION_ID, V2_RESPONSES_ID,
+    FixtureState, ObservedApi, ObservedRequest, CHAT_COMPLETION_ID, RESPONSES_ID,
+    V2_CHAT_COMPLETION_ID, V2_RESPONSES_ID,
 };
 
 pub(super) async fn chat_completions(
-    State(_state): State<FixtureState>,
+    State(state): State<FixtureState>,
     request: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let request = match parse_request(request, FixtureRequest::parse_chat) {
         Ok(request) => request,
         Err(response) => return *response,
     };
+    observe_request(&state, ObservedApi::ChatCompletions, &request);
     if v2::has_marker(&request.last_user_content) {
         return v2_chat_response(request);
     }
@@ -63,6 +65,7 @@ pub(super) async fn responses(
         Ok(request) => request,
         Err(response) => return *response,
     };
+    observe_request(&state, ObservedApi::Responses, &request);
     if v2::has_marker(&request.last_user_content) {
         return v2_responses_response(request);
     }
@@ -81,6 +84,17 @@ pub(super) async fn responses(
         );
     }
     nonstream::responses_text(RESPONSES_ID, spec.response, spec.delay_ms)
+}
+
+pub(super) async fn models() -> Json<Value> {
+    Json(json!({
+        "object": "list",
+        "data": [
+            {"id": "fixture-model", "owned_by": "ahp-test"},
+            {"id": "fixture-fast", "owned_by": "ahp-test"},
+            {"id": "fixture-reasoning", "owned_by": "ahp-test"},
+        ],
+    }))
 }
 
 fn v2_chat_response(request: FixtureRequest) -> Response {
@@ -166,6 +180,14 @@ fn parse_request(
             "invalid_request_error",
         ))),
     }
+}
+
+fn observe_request(state: &FixtureState, api: ObservedApi, request: &FixtureRequest) {
+    state.record_request(ObservedRequest {
+        api,
+        model: request.model.clone(),
+        reasoning_effort: request.reasoning_effort.clone(),
+    });
 }
 
 fn split_for_incremental_output(value: &str) -> Vec<String> {

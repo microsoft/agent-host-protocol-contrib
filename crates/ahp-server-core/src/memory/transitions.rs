@@ -16,7 +16,14 @@ pub(super) fn start_turn(
     request: TurnStart,
 ) -> Result<CommittedTransition<StartedTurn>, StoreError> {
     store.transact(move |data| {
-        let workspace = data.session_for_chat(&request.chat)?.workspace.clone();
+        let session = data.session_for_chat(&request.chat)?;
+        let workspace = session.workspace.clone();
+        let model_selection = request
+            .action
+            .message
+            .model
+            .clone()
+            .unwrap_or_else(|| session.model_selection.clone());
         let chat = data.chat_mut(&request.chat)?;
         if chat.active.is_some() {
             return Err(StoreConflict::ActiveTurn(request.chat).into());
@@ -25,13 +32,16 @@ pub(super) fn start_turn(
             id: response_part_id(&request.action.turn_id),
             content: String::new(),
         });
-        chat.active = Some(super::state::Active::new(&request.action, part.clone()));
+        let mut action = request.action;
+        action.message.model = Some(model_selection.clone());
+        chat.active = Some(super::state::Active::new(&action, part.clone()));
         chat.modified_at = now();
         let value = StartedTurn {
             chat: request.chat.clone(),
-            turn_id: request.action.turn_id.clone(),
-            message: request.action.message.clone(),
+            turn_id: action.turn_id.clone(),
+            message: action.message.clone(),
             workspace,
+            model_selection,
         };
         let summary = data.chat_summary(data.chat(&request.chat)?);
         Ok((
@@ -39,7 +49,7 @@ pub(super) fn start_turn(
             vec![
                 Draft::action(
                     request.chat.clone(),
-                    StateAction::ChatTurnStarted(request.action),
+                    StateAction::ChatTurnStarted(action),
                     request.origin,
                 ),
                 summary_draft(data, &request.chat, summary),

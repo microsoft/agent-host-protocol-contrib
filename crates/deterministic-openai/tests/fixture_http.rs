@@ -1,4 +1,4 @@
-use deterministic_openai::RunningFixture;
+use deterministic_openai::{ObservedApi, RunningFixture};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use tokio::time::{timeout, Duration};
@@ -322,6 +322,99 @@ async fn validates_errors_and_chat_only_responses_404() -> Result<(), Box<dyn st
         chat.pointer("/choices/0/message/content"),
         Some(&json!("Deterministic echo: hello"))
     );
+    chat_only.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn lists_models_and_observes_selected_model_and_reasoning_effort(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = start().await?;
+    let client = reqwest::Client::new();
+    let models: Value = client
+        .get(format!("{}/v1/models", fixture.base_url()))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(models["object"], "list");
+    assert_eq!(
+        models["data"],
+        json!([
+            {"id": "fixture-model", "owned_by": "ahp-test"},
+            {"id": "fixture-fast", "owned_by": "ahp-test"},
+            {"id": "fixture-reasoning", "owned_by": "ahp-test"},
+        ])
+    );
+
+    let mut chat = chat_request("selected chat", false);
+    chat["model"] = json!("fixture-fast");
+    chat["reasoning_effort"] = json!("xhigh");
+    request_json(&client, &chat_endpoint(&fixture), chat).await?;
+
+    let mut responses = responses_request("selected responses", false);
+    responses["model"] = json!("fixture-reasoning");
+    responses["reasoning"] = json!({"effort": "medium"});
+    request_json(&client, &responses_endpoint(&fixture), responses).await?;
+
+    assert_eq!(
+        fixture.requests(),
+        vec![
+            deterministic_openai::ObservedRequest {
+                api: ObservedApi::ChatCompletions,
+                model: "fixture-fast".to_owned(),
+                reasoning_effort: Some("xhigh".to_owned()),
+            },
+            deterministic_openai::ObservedRequest {
+                api: ObservedApi::Responses,
+                model: "fixture-reasoning".to_owned(),
+                reasoning_effort: Some("medium".to_owned()),
+            },
+        ]
+    );
+
+    assert_error(
+        client
+            .post(chat_endpoint(&fixture))
+            .json(&json!({
+                "model": "fixture-model",
+                "messages": [{"role": "user", "content": "invalid"}],
+                "reasoning_effort": false,
+            }))
+            .send()
+            .await?,
+        StatusCode::BAD_REQUEST,
+        INVALID_REQUEST,
+        "invalid_request_error",
+    )
+    .await?;
+    assert_error(
+        client
+            .post(responses_endpoint(&fixture))
+            .json(&json!({
+                "model": "fixture-model",
+                "input": [{"role": "user", "content": "invalid"}],
+                "reasoning": {"effort": "unsupported"},
+            }))
+            .send()
+            .await?,
+        StatusCode::BAD_REQUEST,
+        INVALID_REQUEST,
+        "invalid_request_error",
+    )
+    .await?;
+    fixture.shutdown().await?;
+
+    let chat_only = RunningFixture::start_chat_only("127.0.0.1:0".parse()?).await?;
+    let models: Value = client
+        .get(format!("{}/v1/models", chat_only.base_url()))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(models["data"].as_array().map(Vec::len), Some(3));
     chat_only.shutdown().await?;
     Ok(())
 }

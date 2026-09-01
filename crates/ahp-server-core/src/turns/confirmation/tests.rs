@@ -67,6 +67,7 @@ fn setup() -> Result<
             default_chat: chat.into(),
             provider: "openai".into(),
             workspace: "file:///workspace".into(),
+            model_selection: crate::ModelCatalog::single("test").default_selection,
         })
         .map_err(|error| error.to_string())?;
     store
@@ -85,6 +86,7 @@ fn setup() -> Result<
                 meta: None,
             },
             origin: None,
+            legacy_default_selection: crate::ModelCatalog::single("test").default_selection,
         })
         .map_err(|error| error.to_string())?
         .value;
@@ -201,7 +203,7 @@ fn fixture_session_has_a_pending_tool() -> Result<(), String> {
     let snapshot = store
         .snapshot(crate::SnapshotRequest {
             channel: started.chat,
-            model_name: "test".into(),
+            model_catalog: crate::ModelCatalog::single("test"),
             server_tools: Vec::new(),
         })
         .map_err(|error| error.to_string())?;

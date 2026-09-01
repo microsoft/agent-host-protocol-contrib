@@ -33,9 +33,10 @@ cargo run -p advanced-workspace-host -- --demo
 ```
 
 It starts an internal loopback `deterministic-openai-fixture`, uses
-`fixture-model` with automatic API selection, and prints the browser and AHP
-URLs. Open the printed **Chat UI** URL, then click **Connect**; connecting is
-always an explicit browser action.
+`fixture-model` with automatic API selection, discovers its catalog (including
+the fixture fast and reasoning choices), and prints the browser and AHP URLs.
+Open the printed **Chat UI** URL, then click **Connect**; connecting is always
+an explicit browser action.
 
 The demo builds `samples\web\ahp-chat` only if its `dist\index.html` is
 missing or unusable. It runs `npm ci` only when `node_modules` is absent or
@@ -85,6 +86,7 @@ The CLI keeps the familiar flags and environment variables:
 | `--database` | `AHP_DATABASE` | `.ahp-samples\advanced.redb`; `.ahp-samples\advanced-demo.redb` with `--demo` |
 | `--openai-base-url` | `OPENAI_BASE_URL` | `https://api.openai.com` (ignored by `--demo`) |
 | `--openai-model` | `OPENAI_MODEL` | required unless `--demo` |
+| `--no-discover-models` | `AHP_NO_DISCOVER_MODELS` | `false`; configured mode only |
 | `--openai-api-key` | `OPENAI_API_KEY` | unset |
 | `--openai-api` | `OPENAI_API` | `auto` |
 | `--demo` | — | `false` |
@@ -106,9 +108,37 @@ are additive, never a replacement for same-origin protection.
 After every successful start the CLI prints `AHP WebSocket: <ws URL>`. If a
 usable frontend is present, it prints `Chat UI: <http URL>/`. Otherwise the
 Chat UI line truthfully reports that it is unavailable and gives the same HTTP
-URL for the 503 build-guidance page.
+URL for the 503 build-guidance page. It also prints `Models: N available;
+default <id>` without exposing credentials.
 
-## Model streaming and timeouts
+## Model discovery, selection, streaming, and timeouts
+
+Before accepting clients, configured mode requests `GET /v1/models` from the
+OpenAI-compatible endpoint and advertises every returned model in deterministic
+ID order. `--openai-model` remains the default selection, and is inserted into
+the catalog if the endpoint does not list it. The model ID is used as its label
+when the endpoint has no display-name metadata. Session configuration selects
+the default model; individual messages may select another advertised model.
+
+Each advertised model offers a production-inspired `thinkingLevel` configuration
+whose choices depend on the selected model. Omit `thinkingLevel` (`Model
+default`) to leave reasoning behavior to that model; the host never sends a
+synthetic “default” value. A session selection supplies future turns, while a
+per-message selection applies only to that message.
+
+The catalog retains every valid discovered ID. Its capability policy gives
+fast/mini/nano models the shorter `none`/`minimal`/`low` range, current
+reasoning models progressively deeper ranges, and unknown compatible IDs a
+conservative general range. The built-in fixture demonstrates distinct fast,
+general, and extended-reasoning choices.
+
+An endpoint responding to model discovery with 404, 405, or 501 is explicitly
+reported at startup and falls back to only the configured default model. Other
+HTTP responses (including authentication and rate-limit failures), network
+errors, timeouts, and malformed catalog responses fail startup. For unusual
+compatible endpoints that cannot reliably expose a catalog, use
+`--no-discover-models` to advertise only `--openai-model`. The demo always
+discovers its fixture catalog.
 
 `--openai-api auto` tries Responses first and caches its selection. It falls
 back to Chat Completions only when the initial Responses request returns HTTP

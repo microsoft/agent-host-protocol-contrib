@@ -6,7 +6,7 @@ mod reports;
 use std::path::PathBuf;
 
 use advanced_workspace_host::{AdvancedHost, AdvancedHostConfig, RunningAdvancedHost};
-use deterministic_openai::RunningFixture;
+use deterministic_openai::{ObservedRequest, RunningFixture};
 use openai_agent_model::ModelConfig;
 use uuid::Uuid;
 
@@ -62,6 +62,7 @@ impl LocalStack {
                 bind,
                 database_path: artifact.join("database").join("mock-host.redb"),
                 model: ModelConfig::new(fixture.base_url(), "fixture-model"),
+                discover_models: true,
                 workspace_roots: vec![workspace_root],
                 reset_shell_approvals: false,
                 chunk_size: 11,
@@ -79,10 +80,14 @@ impl LocalStack {
         }
     }
 
-    async fn start_host(&self) -> Result<RunningAdvancedHost, ConformanceError> {
+    pub(super) async fn start_host(&self) -> Result<RunningAdvancedHost, ConformanceError> {
         AdvancedHost::start(self.config.clone())
             .await
             .map_err(|error| ConformanceError::Fixture(error.to_string()))
+    }
+
+    pub(super) fn fixture_requests(&self) -> Vec<ObservedRequest> {
+        self.fixture.requests()
     }
 
     async fn cleanup(self) -> Result<(), ConformanceError> {
@@ -114,6 +119,7 @@ pub async fn run_local_suite(
     options.model_checks = true;
     let mut report = suite::run_suite_at(target.clone(), options.clone(), true).await;
     if let Ok(report) = &mut report {
+        reports::append_model_config_cases(report, &target, &options, &stack).await;
         reports::append_workspace_tool_cases(report, &target, &options, &stack).await;
     }
     let stopped = host

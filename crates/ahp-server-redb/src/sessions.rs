@@ -11,10 +11,11 @@ use crate::types::{
 use crate::RedbHostStore;
 use ahp_server_core::{
     CommittedTransition, CreateChat, CreateSession, CreatedSession, DisposedSession,
-    MarkSessionReady, StoreConflict, StoreError,
+    MarkSessionReady, StoreConflict, StoreError, UpdateSessionConfig,
 };
 use ahp_types::actions::{
-    RootActiveSessionsChangedAction, SessionChatAddedAction, SessionReadyAction, StateAction,
+    RootActiveSessionsChangedAction, SessionChatAddedAction, SessionConfigChangedAction,
+    SessionReadyAction, StateAction,
 };
 use ahp_types::common::ROOT_RESOURCE_URI;
 
@@ -49,6 +50,7 @@ impl RedbHostStore {
                 lifecycle: PersistedLifecycle::Creating,
                 chats: vec![request.default_chat],
                 default_chat: Some(chat.uri.clone()),
+                model_selection: Some(request.model_selection),
             };
             let mut session_ids = read_session_ids_from_write(write)?;
             session_ids.push(session.uri.clone());
@@ -94,6 +96,7 @@ impl RedbHostStore {
                     request.session
                 )));
             }
+
             session.lifecycle = PersistedLifecycle::Ready;
             write_session(write, &session)?;
             Ok(TransitionWork::new(
@@ -176,6 +179,33 @@ impl RedbHostStore {
                         active_sessions: count,
                     }),
                     None,
+                )],
+            ))
+        })
+    }
+}
+
+impl RedbHostStore {
+    pub(crate) fn update_session_config_transition(
+        &self,
+        request: UpdateSessionConfig,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.commit_transition(move |write| {
+            let mut session = load_session(write, &request.session)?
+                .ok_or_else(|| StoreConflict::UnknownChannel(request.session.clone()))?;
+            session.model_selection = Some(request.model_selection.clone());
+            write_session(write, &session)?;
+            Ok(TransitionWork::new(
+                (),
+                vec![Draft::action(
+                    request.session,
+                    StateAction::SessionConfigChanged(SessionConfigChangedAction {
+                        config: ahp_server_core::ModelCatalog::session_config_values(
+                            &request.model_selection,
+                        ),
+                        replace: Some(true),
+                    }),
+                    request.origin,
                 )],
             ))
         })

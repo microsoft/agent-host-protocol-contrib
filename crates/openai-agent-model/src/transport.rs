@@ -4,13 +4,52 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use serde::Deserialize;
 use tokio::time::{timeout, Instant};
 
 use crate::dto::request_json;
 use crate::sse::response_stream;
-use crate::{ModelApi, ModelError, ModelEventStream, ModelRequest, OpenAiModel};
+use crate::{ModelApi, ModelDescriptor, ModelError, ModelEventStream, ModelRequest, OpenAiModel};
 
 const MAX_ERROR_BODY_BYTES: usize = 4_096;
+const MAX_MODELS_BODY_BYTES: usize = 1_048_576;
+
+#[derive(Deserialize)]
+struct ModelCatalogResponse {
+    data: Vec<ModelDescriptor>,
+}
+
+pub(crate) async fn list_models(client: &OpenAiModel) -> Result<Vec<ModelDescriptor>, ModelError> {
+    let response = send_model_catalog_request(client).await?;
+    let status = response.status();
+    if supports_fallback(status) {
+        return Err(ModelError::ModelsUnsupported {
+            status,
+            body: bounded_body(response, client.config.timeouts.idle).await?,
+        });
+    }
+    if !status.is_success() {
+        return Err(http_error(response, client.config.timeouts.idle).await?);
+    }
+    let bytes = bounded_model_catalog_body(response, client.config.timeouts.idle).await?;
+    let mut catalog: ModelCatalogResponse = serde_json::from_slice(&bytes).map_err(|error| {
+        ModelError::InvalidResponse(format!(
+            "model catalog response was not valid JSON: {error}"
+        ))
+    })?;
+    if catalog.data.iter().any(|model| model.id.trim().is_empty()) {
+        return Err(ModelError::InvalidResponse(
+            "model catalog response contained an empty model identifier".to_owned(),
+        ));
+    }
+    catalog.data.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.owned_by.cmp(&right.owned_by))
+    });
+    catalog.data.dedup_by(|left, right| left.id == right.id);
+    Ok(catalog.data)
+}
 
 pub(crate) async fn open(
     client: &OpenAiModel,
@@ -70,7 +109,23 @@ async fn send(
         .client
         .post(client.endpoints.url(api))
         .header(ACCEPT, "text/event-stream")
-        .json(&request_json(api, &client.config.model, request));
+        .json(&request_json(api, &client.config.model, request)?);
+    if let Some(api_key) = &client.config.api_key {
+        builder = builder.bearer_auth(api_key);
+    }
+    timeout(client.config.timeouts.connect, builder.send())
+        .await
+        .map_err(|_| ModelError::ResponseTimeout {
+            timeout: client.config.timeouts.connect,
+        })?
+        .map_err(ModelError::Request)
+}
+
+async fn send_model_catalog_request(client: &OpenAiModel) -> Result<reqwest::Response, ModelError> {
+    let mut builder = client
+        .client
+        .get(client.endpoints.models())
+        .header(ACCEPT, "application/json");
     if let Some(api_key) = &client.config.api_key {
         builder = builder.bearer_auth(api_key);
     }
@@ -150,9 +205,45 @@ async fn bounded_body(response: reqwest::Response, idle: Duration) -> Result<Str
     })
 }
 
+async fn bounded_model_catalog_body(
+    response: reqwest::Response,
+    idle: Duration,
+) -> Result<Vec<u8>, ModelError> {
+    let body = response.bytes_stream();
+    futures_util::pin_mut!(body);
+    let mut bytes = Vec::new();
+    let mut deadline = Instant::now() + idle;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let next = timeout(remaining, body.next())
+            .await
+            .map_err(|_| ModelError::IdleTimeout { timeout: idle })?;
+        let Some(chunk) = next else {
+            break;
+        };
+        let chunk = chunk?;
+        if chunk.is_empty() {
+            continue;
+        }
+        deadline = Instant::now() + idle;
+        let available = MAX_MODELS_BODY_BYTES.saturating_sub(bytes.len());
+        if chunk.len() > available {
+            return Err(ModelError::InvalidResponse(format!(
+                "model catalog response exceeded {MAX_MODELS_BODY_BYTES} bytes"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 #[path = "selection_tests.rs"]
 mod selection_tests;
+
+#[cfg(test)]
+#[path = "model_catalog_tests.rs"]
+mod model_catalog_tests;
 
 #[cfg(test)]
 #[path = "timeout_tests.rs"]

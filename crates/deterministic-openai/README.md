@@ -28,10 +28,13 @@ cargo test --manifest-path crates\deterministic-openai\Cargo.toml
 
 * `POST /v1/chat/completions`
 * `POST /v1/responses`
+* `GET /v1/models`
 
 `RunningFixture::start_chat_only(bind)` serves Chat Completions and returns a
-JSON `404` from Responses. `base_url()` returns the configured client root and
-`shutdown(self)` stops the listener.
+JSON `404` from Responses; it still serves the model list. The model list uses
+the OpenAI list shape and advertises `fixture-model`, `fixture-fast`, and
+`fixture-reasoning`, all owned by `ahp-test`. `base_url()` returns the
+configured client root and `shutdown(self)` stops the listener.
 
 Both endpoint parsers require a non-empty string `model`, a non-empty input
 array (`messages` for Chat, `input` for Responses), and a boolean `stream` if
@@ -44,6 +47,15 @@ type `mock_directive_error` and code `AHP_TEST_INVALID_DIRECTIVE`; an unsupporte
 directive version returns `AHP_TEST_UNSUPPORTED_VERSION`. The upstream-error
 directive returns its requested 4xx/5xx status, type `mock_upstream_error`, and
 code `AHP_TEST_UPSTREAM`.
+
+Requests may use any non-empty model ID. Optional reasoning settings are
+validated as OpenAI wire values: Responses accepts
+`"reasoning":{"effort":"..."}` and Chat Completions accepts a top-level
+`"reasoning_effort":"..."`, where the effort is one of `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, or `max`. The selected ID never changes the
+fixture's v1/v2 behavior. `RunningFixture::requests()` returns a bounded,
+concurrency-safe snapshot of successful requests as `ObservedRequest` values
+containing `api`, `model`, and `reasoning_effort`.
 
 ## Immutable directive contracts
 

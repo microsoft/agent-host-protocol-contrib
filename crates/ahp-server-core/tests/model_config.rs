@@ -1,0 +1,233 @@
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use ahp_server_core::{
+    CoreConfig, CoreHost, HostStore, MemoryHostStore, ModelCatalog, SnapshotRequest,
+    WorkspaceAgentProfile,
+};
+use futures_util::stream;
+use openai_agent_model::{
+    AgentModel, ModelEventStream, ModelRequest, ModelRequestFuture, ModelStreamEvent,
+    ReasoningEffort,
+};
+use serde_json::{json, Value};
+use tokio::task::yield_now;
+use tokio::time::timeout;
+use workspace_agent_tools::ConfiguredWorkspaces;
+
+struct RecordingModel {
+    requests: Mutex<Vec<ModelRequest>>,
+}
+
+type HostFixture = (CoreHost, Arc<MemoryHostStore>, Arc<RecordingModel>);
+
+impl RecordingModel {
+    fn requests(&self) -> Vec<ModelRequest> {
+        self.requests.lock().expect("model recorder mutex").clone()
+    }
+}
+
+impl AgentModel for RecordingModel {
+    fn model_name(&self) -> &str {
+        "alpha"
+    }
+
+    fn stream<'a>(&'a self, request: &'a ModelRequest) -> ModelRequestFuture<'a> {
+        self.requests
+            .lock()
+            .expect("model recorder mutex")
+            .push(request.clone());
+        Box::pin(async {
+            let stream: ModelEventStream =
+                Box::pin(stream::iter([Ok(ModelStreamEvent::Completed)]));
+            Ok(stream)
+        })
+    }
+}
+
+fn catalog() -> ModelCatalog {
+    let mut alpha = ModelCatalog::single("alpha").models.remove(0);
+    alpha.name = "Alpha".into();
+    let mut beta = ModelCatalog::single("beta").models.remove(0);
+    beta.name = "Beta".into();
+    ModelCatalog {
+        models: vec![alpha, beta],
+        default_selection: ahp_types::state::ModelSelection {
+            id: "alpha".into(),
+            config: None,
+        },
+    }
+}
+
+fn host() -> Result<HostFixture, Box<dyn std::error::Error>> {
+    let store = Arc::new(MemoryHostStore::new());
+    let model = Arc::new(RecordingModel {
+        requests: Mutex::new(Vec::new()),
+    });
+    let profile = WorkspaceAgentProfile::new(ConfiguredWorkspaces::from_current_dir()?);
+    let host = CoreHost::with_model_catalog(
+        CoreConfig::default(),
+        catalog(),
+        store.clone(),
+        model.clone(),
+        Arc::new(profile),
+    )?;
+    Ok((host, store, model))
+}
+
+async fn next(peer: &mut ahp_server_core::CorePeer) -> Result<Value, Box<dyn std::error::Error>> {
+    let frame = timeout(Duration::from_secs(1), peer.recv())
+        .await?
+        .ok_or("peer closed")?;
+    Ok(serde_json::from_str(&frame)?)
+}
+
+async fn request(
+    host: &CoreHost,
+    peer: &mut ahp_server_core::CorePeer,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    host.handle_text(
+        peer.id(),
+        &json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string(),
+    )
+    .await?;
+    loop {
+        let frame = next(peer).await?;
+        if frame.get("id") == Some(&Value::from(id)) {
+            return Ok(frame);
+        }
+    }
+}
+
+async fn notify(
+    host: &CoreHost,
+    peer: &ahp_server_core::CorePeer,
+    channel: &str,
+    client_seq: i64,
+    action: Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.handle_text(
+        peer.id(),
+        &json!({
+            "jsonrpc": "2.0", "method": "dispatchAction",
+            "params": { "channel": channel, "clientSeq": client_seq, "action": action }
+        })
+        .to_string(),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn action(
+    peer: &mut ahp_server_core::CorePeer,
+    expected_type: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    loop {
+        let frame = next(peer).await?;
+        if frame.pointer("/params/action/type").and_then(Value::as_str) == Some(expected_type) {
+            return Ok(frame);
+        }
+    }
+}
+
+async fn wait_for_requests(
+    model: &RecordingModel,
+    count: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for _ in 0..100 {
+        if model.requests().len() >= count {
+            return Ok(());
+        }
+        yield_now().await;
+    }
+    Err(format!("model did not receive {count} requests").into())
+}
+
+#[tokio::test]
+async fn advertises_and_resolves_the_complete_catalog() -> Result<(), Box<dyn std::error::Error>> {
+    let (host, _, _) = host()?;
+    let mut peer = host.open_peer().await;
+    let initialized = request(
+        &host,
+        &mut peer,
+        1,
+        "initialize",
+        json!({
+            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.8.0"],
+            "initialSubscriptions": ["ahp-root://"]
+        }),
+    )
+    .await?;
+    assert_eq!(
+        initialized
+            .pointer("/result/snapshots/0/state/agents/0/models")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+    assert!(initialized
+        .pointer(
+            "/result/snapshots/0/state/agents/0/models/0/configSchema/properties/thinkingLevel"
+        )
+        .is_some());
+
+    let resolved = request(
+        &host,
+        &mut peer,
+        2,
+        "resolveSessionConfig",
+        json!({ "channel": "ahp-root://", "provider": "openai" }),
+    )
+    .await?;
+    assert_eq!(
+        resolved.pointer("/result/values/model/id"),
+        Some(&json!("alpha"))
+    );
+    let partial = request(
+        &host,
+        &mut peer,
+        3,
+        "resolveSessionConfig",
+        json!({
+            "channel": "ahp-root://",
+            "config": { "model": { "config": { "thinkingLevel": "medium" } } }
+        }),
+    )
+    .await?;
+    assert_eq!(
+        partial.pointer("/result/values/model/config/thinkingLevel"),
+        Some(&json!("medium"))
+    );
+    let invalid = request(
+        &host,
+        &mut peer,
+        4,
+        "resolveSessionConfig",
+        json!({ "channel": "ahp-root://", "config": { "model": { "id": "missing" } } }),
+    )
+    .await?;
+    assert_eq!(invalid.pointer("/error/code"), Some(&json!(-32602)));
+
+    let completions = request(
+        &host,
+        &mut peer,
+        5,
+        "sessionConfigCompletions",
+        json!({ "channel": "ahp-root://", "property": "model", "query": "ET" }),
+    )
+    .await?;
+    assert_eq!(
+        completions.pointer("/result/items/0/value"),
+        Some(&json!("beta"))
+    );
+    let schema: ahp_types::state::SessionConfigSchema =
+        serde_json::from_value(resolved["result"]["schema"].clone())?;
+    assert_eq!(serde_json::to_value(schema)?, resolved["result"]["schema"]);
+    Ok(())
+}
+
+#[path = "model_config/turns.rs"]
+mod model_config_turns;

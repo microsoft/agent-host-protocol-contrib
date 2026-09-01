@@ -1,5 +1,6 @@
 import { CircleAlert, MessageSquarePlus, PlugZap, Unplug } from "lucide-react"
 
+import { modelSelectionFromConfig } from "@/ahp/model-config"
 import type { AhpService } from "@/ahp/service"
 import type { AppSnapshot } from "@/ahp/store"
 import { formatWorkspace } from "@/ahp/workspace"
@@ -50,7 +51,8 @@ export function ChatWorkspace({ service, snapshot }: ChatWorkspaceProps) {
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <SessionSidebar
           snapshot={snapshot}
-          onCreateSession={(workspaceInput) => service.createSession(workspaceInput)}
+          onCreateSession={(workspaceInput, config) => service.createSession(workspaceInput, config)}
+          onResolveSessionConfig={service.resolveSessionConfig}
           onRefresh={() => service.refreshSessions()}
           onSelect={(sessionUri) => service.selectSession(sessionUri)}
         />
@@ -109,8 +111,12 @@ export function ChatWorkspace({ service, snapshot }: ChatWorkspaceProps) {
           <Composer
             chat={snapshot.selectedChat}
             connected={connected}
+            models={snapshot.models}
+            selection={modelSelectionFromConfig(session?.config?.values)}
+            configPending={snapshot.pendingSessionConfig === session?.resource}
             onSend={(text) => service.sendPrompt(text)}
             onCancel={() => service.cancelActiveTurn()}
+            onChangeModel={(model) => service.changeSessionModel(model)}
           />
         </section>
       </div>

@@ -31,6 +31,22 @@ fn configured_mode_defaults_to_production_and_accepts_an_endpoint_override(
 }
 
 #[test]
+fn configured_mode_can_skip_model_discovery() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::try_parse_from([
+        "advanced-workspace-host",
+        "--openai-model",
+        "compatible-model",
+        "--no-discover-models",
+    ])?;
+    assert!(args.no_discover_models);
+    assert!(
+        Args::try_parse_from(["advanced-workspace-host", "--demo", "--no-discover-models"])
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn demo_rejects_incompatible_web_options() {
     assert!(Args::try_parse_from(["advanced-workspace-host", "--demo", "--no-web"]).is_err());
     assert!(Args::try_parse_from([

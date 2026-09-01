@@ -75,6 +75,12 @@ function ConversationItem({
           <Bubble align="end">
             <BubbleContent className="whitespace-pre-wrap">{turn.userText}</BubbleContent>
           </Bubble>
+          {turn.model && (
+            <p className="mt-1 text-right text-[11px] text-muted-foreground">
+              {turn.model.id}
+              {turn.model.config?.thinkingLevel !== undefined && ` · ${String(turn.model.config.thinkingLevel)}`}
+            </p>
+          )}
         </MessageContent>
       </Message>
       <Message>

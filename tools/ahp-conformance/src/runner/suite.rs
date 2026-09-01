@@ -92,6 +92,12 @@ pub(super) fn validate_selected_cases(
         "chat-completions-streaming",
         "api-auto-selection",
         "streaming-cancellation",
+        "model-catalog",
+        "session-model-config",
+        "session-model-default",
+        "session-model-change",
+        "message-model-override",
+        "session-model-restart",
     ];
 
     for name in selected {
@@ -158,5 +164,7 @@ mod tests {
         assert!(validate_selected_cases(&["shell-approval-persistence".to_owned()], true).is_ok());
         assert!(validate_selected_cases(&["responses-streaming".to_owned()], false).is_err());
         assert!(validate_selected_cases(&["api-auto-selection".to_owned()], true).is_ok());
+        assert!(validate_selected_cases(&["model-catalog".to_owned()], false).is_err());
+        assert!(validate_selected_cases(&["session-model-restart".to_owned()], true).is_ok());
     }
 }

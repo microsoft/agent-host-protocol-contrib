@@ -68,6 +68,15 @@ impl OpenAiModel {
         self.config.api
     }
 
+    /// Lists models advertised by the configured OpenAI-compatible endpoint.
+    ///
+    /// A [`ModelError::ModelsUnsupported`] result means the endpoint returned
+    /// 404, 405, or 501 and callers may explicitly use their configured
+    /// default model instead.
+    pub async fn list_models(&self) -> Result<Vec<crate::ModelDescriptor>, ModelError> {
+        transport::list_models(self).await
+    }
+
     /// Starts a streaming request. Dropping the returned stream cancels its
     /// HTTP response body.
     pub async fn stream(&self, request: &ModelRequest) -> Result<ModelEventStream, ModelError> {

@@ -15,6 +15,12 @@ use crate::host::CoreHost;
 use crate::rpc::RpcFault;
 use crate::store::{ActionReplay, CreateChat, CreateSession, MarkSessionReady};
 
+mod config;
+
+pub(super) use config::{
+    create_session_config, resolve_session_config, session_config_completions,
+};
+
 pub(super) async fn initialize(
     host: &CoreHost,
     peer_id: u64,
@@ -150,15 +156,9 @@ pub(super) async fn create_session(
             "createSession channel must be an ahp-session URI",
         ));
     }
-    if request.active_client.is_some()
-        || request.fork.is_some()
-        || request
-            .config
-            .as_ref()
-            .is_some_and(|config| !config.is_empty())
-    {
+    if request.active_client.is_some() || request.fork.is_some() {
         return Err(RpcFault::invalid_params(
-            "active clients, forks, and per-session configuration are unsupported",
+            "active clients and forks are unsupported",
         ));
     }
     let provider = request.provider.unwrap_or_else(|| "openai".into());
@@ -174,6 +174,11 @@ pub(super) async fn create_session(
         .profile
         .select_workspace(request.working_directories)
         .map_err(RpcFault::internal)?;
+    let model_selection = host
+        .inner
+        .model_catalog
+        .resolve(create_session_config(request.config.as_ref())?)
+        .map_err(|error| RpcFault::invalid_params(error.to_string()))?;
     let transition = host
         .inner
         .store
@@ -182,6 +187,7 @@ pub(super) async fn create_session(
             default_chat: format!("ahp-chat:/{}", Uuid::new_v4()),
             provider,
             workspace: workspace.uri().clone(),
+            model_selection,
         })
         .map_err(RpcFault::store)?;
     let session = transition.value.session.clone();

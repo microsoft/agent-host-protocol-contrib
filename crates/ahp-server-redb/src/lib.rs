@@ -23,7 +23,7 @@ use crate::replay::{Draft, TransitionWork};
 use ahp_server_core::{
     ActionReplay, CommittedTransition, CreateChat, CreateSession, CreatedSession, DisposedSession,
     FinishTurn, HostStore, MarkSessionReady, SnapshotRequest, StartedTurn, StoreConflict,
-    StoreError, ToolCallTransition, TurnStart,
+    StoreError, ToolCallTransition, TurnStart, UpdateSessionConfig,
 };
 use ahp_types::actions::{ActionOrigin, StateAction};
 use ahp_types::common::{Uri, ROOT_RESOURCE_URI};
@@ -89,6 +89,13 @@ impl HostStore for RedbHostStore {
         request: MarkSessionReady,
     ) -> Result<CommittedTransition<()>, StoreError> {
         self.mark_session_ready_transition(request)
+    }
+
+    fn update_session_config(
+        &self,
+        request: UpdateSessionConfig,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.update_session_config_transition(request)
     }
 
     fn create_chat(
@@ -186,5 +193,7 @@ impl HostStore for RedbHostStore {
     }
 }
 
+#[cfg(test)]
+mod model_config_tests;
 #[cfg(test)]
 mod tests;

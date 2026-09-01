@@ -6,6 +6,7 @@ use crate::{ModelApi, ModelError};
 pub(crate) struct EndpointUrls {
     responses: String,
     chat_completions: String,
+    models: String,
     forced_api: Option<ModelApi>,
 }
 
@@ -29,7 +30,7 @@ impl EndpointUrls {
                 reason: "the URL must not contain a fragment".to_owned(),
             });
         }
-        let path = url.path().trim_end_matches('/');
+        let path = url.path().trim_end_matches('/').to_owned();
         let forced_api = if path.ends_with("/responses") {
             Some(ModelApi::Responses)
         } else if path.ends_with("/chat/completions") {
@@ -37,16 +38,19 @@ impl EndpointUrls {
         } else {
             None
         };
+        let models = model_catalog_url(&url, &path, forced_api);
         if let Some(api) = forced_api {
             return Ok(match api {
                 ModelApi::Responses => Self {
                     responses: url.to_string(),
                     chat_completions: String::new(),
+                    models,
                     forced_api,
                 },
                 ModelApi::ChatCompletions => Self {
                     responses: String::new(),
                     chat_completions: url.to_string(),
+                    models,
                     forced_api,
                 },
                 ModelApi::Auto => {
@@ -57,7 +61,7 @@ impl EndpointUrls {
             });
         }
         let root_path = if path.ends_with("/v1") {
-            path.to_owned()
+            path
         } else {
             format!("{path}/v1")
         };
@@ -67,6 +71,7 @@ impl EndpointUrls {
         Ok(Self {
             responses,
             chat_completions: url.to_string(),
+            models,
             forced_api: None,
         })
     }
@@ -81,6 +86,26 @@ impl EndpointUrls {
             ModelApi::ChatCompletions => &self.chat_completions,
         }
     }
+
+    pub(crate) fn models(&self) -> &str {
+        &self.models
+    }
+}
+
+fn model_catalog_url(url: &reqwest::Url, path: &str, forced_api: Option<ModelApi>) -> String {
+    let endpoint_root = match forced_api {
+        Some(ModelApi::Responses) => path.strip_suffix("/responses").unwrap_or(path),
+        Some(ModelApi::ChatCompletions) => path.strip_suffix("/chat/completions").unwrap_or(path),
+        Some(ModelApi::Auto) | None => path,
+    };
+    let version_path = if endpoint_root.ends_with("/v1") {
+        endpoint_root.to_owned()
+    } else {
+        format!("{endpoint_root}/v1")
+    };
+    let mut models_url = url.clone();
+    models_url.set_path(&format!("{version_path}/models"));
+    models_url.to_string()
 }
 
 #[cfg(test)]

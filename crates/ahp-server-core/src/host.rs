@@ -15,6 +15,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{CoreConfig, CoreConfigError};
+use crate::model_catalog::{ModelCatalog, ModelCatalogError};
 use crate::profile::AgentProfile;
 use crate::store::{ApprovalKey, CommittedTransition, HostStore, StoreError};
 
@@ -44,6 +45,9 @@ pub enum CoreHostError {
     /// Configuration rejected before peers were accepted.
     #[error(transparent)]
     Config(#[from] CoreConfigError),
+    /// Model catalogue rejected before peers were accepted.
+    #[error(transparent)]
+    ModelCatalog(#[from] ModelCatalogError),
     /// A store failed while processing a request.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -65,6 +69,7 @@ pub(crate) struct Inner {
     pub(crate) config: CoreConfig,
     pub(crate) store: Arc<dyn HostStore>,
     pub(crate) model: Arc<dyn AgentModel>,
+    pub(crate) model_catalog: ModelCatalog,
     pub(crate) profile: Arc<dyn AgentProfile>,
     pub(crate) shutdown: Shutdown,
     pub(crate) peers: Mutex<HashMap<u64, PeerState>>,
@@ -127,12 +132,31 @@ impl CoreHost {
         model: Arc<dyn AgentModel>,
         profile: Arc<dyn AgentProfile>,
     ) -> Result<Self, CoreHostError> {
+        Self::with_model_catalog(
+            config,
+            ModelCatalog::single(model.model_name()),
+            store,
+            model,
+            profile,
+        )
+    }
+
+    /// Creates a host with an explicit catalogue of selectable OpenAI models.
+    pub fn with_model_catalog(
+        config: CoreConfig,
+        model_catalog: ModelCatalog,
+        store: Arc<dyn HostStore>,
+        model: Arc<dyn AgentModel>,
+        profile: Arc<dyn AgentProfile>,
+    ) -> Result<Self, CoreHostError> {
         config.validate()?;
+        model_catalog.validate()?;
         Ok(Self {
             inner: Arc::new(Inner {
                 config,
                 store,
                 model,
+                model_catalog,
                 profile,
                 shutdown: Shutdown(CancellationToken::new()),
                 peers: Mutex::new(HashMap::new()),

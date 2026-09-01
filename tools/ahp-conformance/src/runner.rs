@@ -71,6 +71,12 @@ impl Report {
             .any(|case| matches!(case.status, CaseStatus::Failed))
     }
 
+    /// Returns the number of selected, passed, failed, or skipped cases reported.
+    #[must_use]
+    pub fn case_count(&self) -> usize {
+        self.cases.len()
+    }
+
     /// Renders the requested human- or machine-readable report.
     pub fn render(&self) -> String {
         match self.format {
@@ -117,6 +123,7 @@ enum CaseScope {
     LocalFixtureSampleHost,
     LocalFixtureWorkspaceTools,
     LocalFixtureModelStreaming,
+    LocalFixtureModelConfiguration,
 }
 
 impl CaseScope {
@@ -127,6 +134,7 @@ impl CaseScope {
             Self::LocalFixtureSampleHost => "local-fixture-sample-host",
             Self::LocalFixtureWorkspaceTools => "local-fixture-workspace-tools",
             Self::LocalFixtureModelStreaming => "local-fixture-model-streaming",
+            Self::LocalFixtureModelConfiguration => "local-fixture-model-configuration",
         }
     }
 }
@@ -170,6 +178,7 @@ pub async fn run_suite(options: RunOptions) -> Result<Report, ConformanceError> 
 mod advanced;
 mod basic;
 mod local_stack;
+mod model_config;
 mod probe;
 mod streaming;
 mod suite;

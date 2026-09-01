@@ -19,8 +19,9 @@ pub use client::{AgentModel, ModelClient, ModelRequestFuture, OpenAiModel};
 pub use collect::collect_stream;
 pub use config::{ModelApi, ModelApiParseError, ModelConfig, StreamTimeouts};
 pub use types::{
-    ModelError, ModelEventStream, ModelMessage, ModelReply, ModelRequest, ModelStreamEvent,
-    ModelToolCall, ModelToolDefinition,
+    ModelDescriptor, ModelError, ModelEventStream, ModelMessage, ModelReply, ModelRequest,
+    ModelSelection, ModelStreamEvent, ModelToolCall, ModelToolDefinition, ReasoningEffort,
+    ReasoningEffortParseError,
 };
 
 #[cfg(test)]

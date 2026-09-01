@@ -14,7 +14,7 @@ use self::state::Data;
 use crate::store::{
     ActionReplay, CommittedTransition, CreateChat, CreateSession, CreatedSession, DisposedSession,
     FinishTurn, HostStore, MarkSessionReady, SnapshotRequest, StartedTurn, StoreConflict,
-    StoreError, ToolCallTransition, TurnStart,
+    StoreError, ToolCallTransition, TurnStart, UpdateSessionConfig,
 };
 
 const REPLAY_LIMIT: usize = 2_048;
@@ -132,6 +132,13 @@ impl HostStore for MemoryHostStore {
         request: MarkSessionReady,
     ) -> Result<CommittedTransition<()>, StoreError> {
         lifecycle::mark_session_ready(self, request)
+    }
+
+    fn update_session_config(
+        &self,
+        request: UpdateSessionConfig,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        lifecycle::update_session_config(self, request)
     }
 
     fn create_chat(

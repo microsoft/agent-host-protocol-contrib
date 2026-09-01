@@ -95,6 +95,7 @@ fn data_with_multiple_chats() -> Result<Data, String> {
         "openai".into(),
         "file:///workspace".into(),
         "2026-01-01T00:00:00.000Z".into(),
+        crate::ModelCatalog::single("model").default_selection,
     );
     session.ready = true;
     session.chats = vec![idle.uri.clone(), pending.uri.clone(), error.uri.clone()];
@@ -112,7 +113,7 @@ fn active_confirmation_states_project_input_needed_chat_snapshots() -> Result<()
     let snapshot = data
         .snapshot(SnapshotRequest {
             channel: "ahp-chat:/pending".into(),
-            model_name: "model".into(),
+            model_catalog: crate::ModelCatalog::single("model"),
             server_tools: Vec::new(),
         })
         .map_err(|error| error.to_string())?;
@@ -137,7 +138,7 @@ fn session_snapshot_and_summary_promote_input_and_error_from_any_chat() -> Resul
     let snapshot = data
         .snapshot(SnapshotRequest {
             channel: "ahp-session:/session".into(),
-            model_name: "model".into(),
+            model_catalog: crate::ModelCatalog::single("model"),
             server_tools: Vec::new(),
         })
         .map_err(|error| error.to_string())?;

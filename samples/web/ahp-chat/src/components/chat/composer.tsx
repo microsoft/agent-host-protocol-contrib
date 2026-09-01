@@ -1,18 +1,34 @@
 import { useState, type KeyboardEvent } from "react"
 import { Send, Square } from "lucide-react"
 
+import type { ModelSelectionView, ModelView } from "@/ahp/model-config"
 import type { ChatView } from "@/ahp/projection"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 
+import { ModelPicker } from "./model-picker"
+
 interface ComposerProps {
   chat?: ChatView
   connected: boolean
+  models: readonly ModelView[]
+  selection?: ModelSelectionView
+  configPending: boolean
   onSend: (text: string) => void
   onCancel: () => void
+  onChangeModel: (selection: ModelSelectionView) => boolean
 }
 
-export function Composer({ chat, connected, onSend, onCancel }: ComposerProps) {
+export function Composer({
+  chat,
+  connected,
+  models,
+  selection,
+  configPending,
+  onSend,
+  onCancel,
+  onChangeModel,
+}: ComposerProps) {
   const [value, setValue] = useState("")
   const canSend = Boolean(connected && chat && !chat.activeTurn && value.trim())
 
@@ -37,6 +53,20 @@ export function Composer({ chat, connected, onSend, onCancel }: ComposerProps) {
         send()
       }}
     >
+      {chat && (
+        <div className="mb-3">
+          <ModelPicker
+            models={models}
+            selection={selection}
+            allowHostDefault={false}
+            disabled={!connected || Boolean(chat.activeTurn) || configPending}
+            onChange={(next) => {
+              if (next) onChangeModel(next)
+            }}
+          />
+          {configPending && <p className="mt-1 text-xs text-muted-foreground">Waiting for the host to apply the model.</p>}
+        </div>
+      )}
       <div className="flex items-end gap-2">
         <Textarea
           value={value}

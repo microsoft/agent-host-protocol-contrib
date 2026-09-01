@@ -21,6 +21,7 @@ import {
   type SessionListItem,
 } from "./projection"
 import { freezeView } from "./projection-types"
+import { projectModels, type ModelView } from "./model-config"
 
 export type ConnectionPhase = "disconnected" | "connecting" | "initializing" | "connected" | "reconnecting" | "error"
 
@@ -34,9 +35,11 @@ export interface ConnectionView {
 
 export interface AppSnapshot {
   connection: ConnectionView
+  models: readonly ModelView[]
   sessions: readonly SessionListItem[]
   selectedSession?: SelectedSessionView
   selectedChat?: ChatView
+  pendingSessionConfig?: URI
   notice?: string
 }
 
@@ -52,6 +55,7 @@ export class AhpStore {
   private selectedChatUri?: URI
   private connection = initialConnection
   private notice?: string
+  private pendingSessionConfig?: URI
   private lastServerSeq = 0
   private snapshot: AppSnapshot = this.createSnapshot()
 
@@ -70,6 +74,7 @@ export class AhpStore {
     this.selectedChatUri = undefined
     this.lastServerSeq = 0
     this.notice = undefined
+    this.pendingSessionConfig = undefined
     this.publish()
   }
 
@@ -80,6 +85,11 @@ export class AhpStore {
 
   setNotice(notice?: string): void {
     this.notice = notice
+    this.publish()
+  }
+
+  setPendingSessionConfig(session?: URI): void {
+    this.pendingSessionConfig = session
     this.publish()
   }
 
@@ -161,9 +171,11 @@ export class AhpStore {
     const chatView = chat ? projectChat(chat) : undefined
     return freezeView({
       connection: { ...this.connection },
+      models: projectModels(this.mirror.root),
       sessions: projectSessionList(this.summaries.values()),
       selectedSession: sessionView,
       selectedChat: chatView,
+      pendingSessionConfig: this.pendingSessionConfig,
       notice: this.notice,
     })
   }

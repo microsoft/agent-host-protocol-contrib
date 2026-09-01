@@ -1,7 +1,8 @@
 //! Atomic session and chat catalogue transitions.
 
 use ahp_types::actions::{
-    RootActiveSessionsChangedAction, SessionChatAddedAction, SessionReadyAction, StateAction,
+    RootActiveSessionsChangedAction, SessionChatAddedAction, SessionConfigChangedAction,
+    SessionReadyAction, StateAction,
 };
 use ahp_types::common::ROOT_RESOURCE_URI;
 
@@ -9,7 +10,7 @@ use super::state::{now, Chat, Session};
 use super::{Draft, MemoryHostStore};
 use crate::store::{
     CommittedTransition, CreateChat, CreateSession, CreatedSession, DisposedSession,
-    MarkSessionReady, StoreConflict, StoreError,
+    MarkSessionReady, StoreConflict, StoreError, UpdateSessionConfig,
 };
 
 pub(super) fn create_session(
@@ -38,6 +39,7 @@ pub(super) fn create_session(
                 request.provider,
                 request.workspace.clone(),
                 timestamp,
+                request.model_selection,
             ),
         );
         data.session_mut(&request.session)?
@@ -64,6 +66,26 @@ pub(super) fn create_session(
                     None,
                 ),
             ],
+        ))
+    })
+}
+
+pub(super) fn update_session_config(
+    store: &MemoryHostStore,
+    request: UpdateSessionConfig,
+) -> Result<CommittedTransition<()>, StoreError> {
+    store.transact(move |data| {
+        data.session_mut(&request.session)?.model_selection = request.model_selection.clone();
+        Ok((
+            (),
+            vec![Draft::action(
+                request.session,
+                StateAction::SessionConfigChanged(SessionConfigChangedAction {
+                    config: crate::ModelCatalog::session_config_values(&request.model_selection),
+                    replace: Some(true),
+                }),
+                request.origin,
+            )],
         ))
     })
 }

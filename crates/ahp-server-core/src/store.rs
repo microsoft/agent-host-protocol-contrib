@@ -3,10 +3,12 @@
 use ahp_types::actions::{ActionEnvelope, ActionOrigin, ChatTurnStartedAction, StateAction};
 use ahp_types::common::Uri;
 use ahp_types::state::{
-    ChatSummary, ErrorInfo, ResponsePart, SessionSummary, Snapshot, ToolCallState,
+    ChatSummary, ErrorInfo, ModelSelection, ResponsePart, SessionSummary, Snapshot, ToolCallState,
 };
 use thiserror::Error;
 use workspace_agent_tools::ExactCommandApproval;
+
+use crate::ModelCatalog;
 
 /// A replay query result.
 #[derive(Clone, Debug, PartialEq)]
@@ -105,8 +107,8 @@ pub enum StoreConflict {
 pub struct SnapshotRequest {
     /// Requested state-bearing channel.
     pub channel: Uri,
-    /// Current model name shown in root state.
-    pub model_name: String,
+    /// Models and configuration schema shown in root and session state.
+    pub model_catalog: ModelCatalog,
     /// Server tools to expose in session state.
     pub server_tools: Vec<ahp_types::state::ToolDefinition>,
 }
@@ -122,6 +124,8 @@ pub struct CreateSession {
     pub provider: String,
     /// Selected workspace URI.
     pub workspace: Uri,
+    /// Resolved default model used for every turn without a message override.
+    pub model_selection: ModelSelection,
 }
 
 /// Result of creating a session and default chat.
@@ -169,6 +173,8 @@ pub struct TurnStart {
     pub action: ChatTurnStartedAction,
     /// Originating client sequence, if supplied.
     pub origin: Option<ActionOrigin>,
+    /// Default used only when projecting a legacy session with no saved selection.
+    pub legacy_default_selection: ModelSelection,
 }
 
 /// Durable output required to execute a started turn.
@@ -182,6 +188,19 @@ pub struct StartedTurn {
     pub message: ahp_types::state::Message,
     /// Persisted session workspace.
     pub workspace: Uri,
+    /// The validated model selection that was durably recorded on the message.
+    pub model_selection: ModelSelection,
+}
+
+/// A fully validated mutable session-model change.
+#[derive(Clone, Debug)]
+pub struct UpdateSessionConfig {
+    /// Session channel whose default selection changes.
+    pub session: Uri,
+    /// Canonical selection persisted for future turns.
+    pub model_selection: ModelSelection,
+    /// Originating client sequence, if supplied.
+    pub origin: Option<ActionOrigin>,
 }
 
 /// The terminal state a store must apply atomically to an active turn.
@@ -278,6 +297,11 @@ pub trait HostStore: Send + Sync {
         &self,
         request: CreateSession,
     ) -> Result<CommittedTransition<CreatedSession>, StoreError>;
+    /// Atomically persists a session model selection and its authoritative action.
+    fn update_session_config(
+        &self,
+        request: UpdateSessionConfig,
+    ) -> Result<CommittedTransition<()>, StoreError>;
     /// Atomically transitions a session to ready.
     fn mark_session_ready(
         &self,

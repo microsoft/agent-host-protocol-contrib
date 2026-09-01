@@ -6,6 +6,8 @@ import {
   type ToolCallConfirmationReason,
 } from "@microsoft/agent-host-protocol"
 
+import type { ModelSelectionView } from "./model-config"
+
 export interface ToolConfirmationOptionView {
   id: string
   label: string
@@ -76,6 +78,7 @@ export type ConversationPartView =
 export interface ConversationTurn {
   id: string
   userText: string
+  model?: ModelSelectionView
   assistantText: string
   responseParts: readonly ConversationPartView[]
   state: "complete" | "cancelled" | "error" | "streaming"

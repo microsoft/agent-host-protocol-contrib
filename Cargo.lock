@@ -1004,6 +1004,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "reqwest",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",

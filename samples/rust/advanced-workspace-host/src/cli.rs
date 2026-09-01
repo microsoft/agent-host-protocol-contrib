@@ -31,6 +31,9 @@ pub(super) struct Args {
     /// Model identifier sent with each streamed completion request.
     #[arg(long, env = "OPENAI_MODEL", required_unless_present = "demo")]
     openai_model: Option<String>,
+    /// Use only `--openai-model` rather than querying the endpoint's `/v1/models` catalog.
+    #[arg(long, env = "AHP_NO_DISCOVER_MODELS", conflicts_with = "demo")]
+    no_discover_models: bool,
     /// Optional bearer API key.
     #[arg(long, env = "OPENAI_API_KEY")]
     openai_api_key: Option<String>,
@@ -134,6 +137,7 @@ impl Args {
             bind: self.bind,
             database_path: self.database.unwrap_or_else(|| default_database(demo)),
             model,
+            discover_models: !self.no_discover_models,
             workspace_roots: self.workspace_root,
             reset_shell_approvals: self.reset_shell_approvals,
             chunk_size: self.chunk_size,
@@ -162,6 +166,7 @@ pub(super) async fn run_host(
     for line in location_lines(host.web_status(), &host.http_url(), &host.websocket_url()) {
         println!("{line}");
     }
+    println!("{}", host.model_summary());
     if let Some(note) = fixture_note {
         println!("{note}");
     }

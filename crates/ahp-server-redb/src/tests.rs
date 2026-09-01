@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use ahp_server_core::{
-    ActionReplay, CreateChat, CreateSession, FinishTurn, HostStore, MarkSessionReady,
+    ActionReplay, CreateChat, CreateSession, FinishTurn, HostStore, MarkSessionReady, ModelCatalog,
     SnapshotRequest, StoreConflict, StoreError, ToolCallTransition, TurnStart,
 };
 use ahp_types::actions::{
@@ -65,11 +65,16 @@ fn create_ready(store: &RedbHostStore) -> Result<(Uri, Uri), StoreError> {
         default_chat: chat.clone(),
         provider: "openai".into(),
         workspace: "file:///workspace".into(),
+        model_selection: default_selection(),
     })?;
     store.mark_session_ready(MarkSessionReady {
         session: session.clone(),
     })?;
     Ok((session, chat))
+}
+
+fn default_selection() -> ahp_types::state::ModelSelection {
+    ModelCatalog::single("test-model").default_selection
 }
 
 fn start(turn_id: &str) -> Result<ChatTurnStartedAction, serde_json::Error> {
@@ -159,7 +164,7 @@ fn ready_action(turn_id: &str, id: &str) -> StateAction {
 fn chat_state(store: &RedbHostStore, chat: Uri) -> Result<ChatState, StoreError> {
     let snapshot = store.snapshot(SnapshotRequest {
         channel: chat,
-        model_name: "test-model".into(),
+        model_catalog: ModelCatalog::single("test-model"),
         server_tools: Vec::new(),
     })?;
     match snapshot.state {
@@ -171,7 +176,7 @@ fn chat_state(store: &RedbHostStore, chat: Uri) -> Result<ChatState, StoreError>
 fn session_state(store: &RedbHostStore, session: Uri) -> Result<SessionState, StoreError> {
     let snapshot = store.snapshot(SnapshotRequest {
         channel: session,
-        model_name: "test-model".into(),
+        model_catalog: ModelCatalog::single("test-model"),
         server_tools: Vec::new(),
     })?;
     match snapshot.state {
@@ -301,13 +306,14 @@ fn catalogue_transitions_are_journaled_and_snapshots_are_typed(
         default_chat: chat.clone(),
         provider: "openai".into(),
         workspace: "file:///workspace".into(),
+        model_selection: default_selection(),
     })?;
     assert_eq!(created.envelopes.len(), 2);
     assert!(matches!(
         store
             .snapshot(SnapshotRequest {
                 channel: "ahp-root://".into(),
-                model_name: "model".into(),
+                model_catalog: ModelCatalog::single("model"),
                 server_tools: Vec::new(),
             })?
             .state,
@@ -317,7 +323,7 @@ fn catalogue_transitions_are_journaled_and_snapshots_are_typed(
         store
             .snapshot(SnapshotRequest {
                 channel: session.clone(),
-                model_name: "model".into(),
+                model_catalog: ModelCatalog::single("model"),
                 server_tools: Vec::new(),
             })?
             .state,
@@ -351,7 +357,7 @@ fn catalogue_transitions_are_journaled_and_snapshots_are_typed(
     assert!(matches!(
         store.snapshot(SnapshotRequest {
             channel: session,
-            model_name: "model".into(),
+            model_catalog: ModelCatalog::single("model"),
             server_tools: Vec::new(),
         }),
         Err(StoreError::Conflict(StoreConflict::UnknownChannel(_)))
@@ -374,6 +380,7 @@ fn turn_transitions_commit_state_journal_origin_and_rejection(
         chat: chat.clone(),
         action: start("turn-1")?,
         origin: origin.clone(),
+        legacy_default_selection: default_selection(),
     })?;
     assert_eq!(started.envelopes.len(), 3);
     assert_eq!(started.envelopes[0].origin, origin);
@@ -443,6 +450,7 @@ fn conflicts_and_invalid_transitions_leave_state_and_journal_unchanged(
         chat: chat.clone(),
         action: start("turn-1")?,
         origin: None,
+        legacy_default_selection: default_selection(),
     })?;
     let before_sequence = store.server_sequence()?;
     let before_state = serde_json::to_value(chat_state(store, chat.clone())?)?;
@@ -451,6 +459,7 @@ fn conflicts_and_invalid_transitions_leave_state_and_journal_unchanged(
             chat: chat.clone(),
             action: start("turn-2")?,
             origin: None,
+            legacy_default_selection: default_selection(),
         }),
         Err(StoreError::Conflict(StoreConflict::ActiveTurn(_)))
     ));
@@ -538,6 +547,7 @@ fn persisted_catalogue_promotes_blocked_and_error_chats_over_a_latest_idle_defau
         chat: blocked_chat.clone(),
         action: start("blocked-turn")?,
         origin: None,
+        legacy_default_selection: default_selection(),
     })?;
     store.start_tool(
         &blocked_chat,
@@ -591,6 +601,7 @@ fn persisted_catalogue_promotes_blocked_and_error_chats_over_a_latest_idle_defau
         chat: error_chat.clone(),
         action: start("error-turn")?,
         origin: None,
+        legacy_default_selection: default_selection(),
     })?;
     store.finish_turn(FinishTurn::Error {
         chat: error_chat.clone(),
@@ -666,6 +677,7 @@ fn restart_recovers_active_turn_and_terminalizes_tools() -> Result<(), Box<dyn s
         chat: chat.clone(),
         action: start("interrupted")?,
         origin: None,
+        legacy_default_selection: default_selection(),
     })?;
     fixture.store().start_tool(
         &chat,
@@ -724,6 +736,7 @@ fn exact_approvals_survive_reopen_without_honoring_legacy_grants(
         chat: chat.clone(),
         action: start("approval-turn")?,
         origin: None,
+        legacy_default_selection: default_selection(),
     })?;
     fixture.store().start_tool(
         &chat,
@@ -762,6 +775,7 @@ fn completed_turn_history_is_limited_to_256_entries() -> Result<(), Box<dyn std:
             chat: chat.clone(),
             action: start(&turn_id)?,
             origin: None,
+            legacy_default_selection: default_selection(),
         })?;
         store.finish_turn(FinishTurn::Complete {
             chat: chat.clone(),

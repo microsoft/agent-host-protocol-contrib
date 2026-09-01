@@ -7,6 +7,8 @@ use serde_json::{Map, Value};
 use super::contract::{code, ContractError};
 
 pub(crate) struct FixtureRequest {
+    pub(crate) model: String,
+    pub(crate) reasoning_effort: Option<String>,
     pub(crate) last_user_content: String,
     pub(crate) last_user_index: Option<usize>,
     pub(crate) messages: Vec<RequestMessage>,
@@ -37,6 +39,7 @@ impl FixtureRequest {
         object: &Map<String, Value>,
         messages: Vec<RequestMessage>,
         tool_names: HashSet<String>,
+        reasoning_effort: Option<String>,
     ) -> Result<Self, ContractError> {
         if messages.is_empty() {
             return Err(ContractError::new(
@@ -66,6 +69,8 @@ impl FixtureRequest {
                 (Some(index), content)
             });
         Ok(Self {
+            model: non_empty_string(object, "model", "model")?,
+            reasoning_effort,
             last_user_content,
             last_user_index,
             messages,
@@ -83,6 +88,33 @@ impl FixtureRequest {
                 _ => None,
             })
     }
+}
+
+pub(super) fn optional_reasoning_effort(
+    value: Option<&Value>,
+    path: &str,
+) -> Result<Option<String>, ContractError> {
+    value.map(|value| reasoning_effort(value, path)).transpose()
+}
+
+pub(super) fn reasoning_effort(value: &Value, path: &str) -> Result<String, ContractError> {
+    let effort = value.as_str().ok_or_else(|| {
+        ContractError::new(
+            code::INVALID_REQUEST,
+            format!("{path} must be a supported reasoning-effort string"),
+        )
+    })?;
+    matches!(
+        effort,
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+    )
+    .then(|| effort.to_owned())
+    .ok_or_else(|| {
+        ContractError::new(
+            code::INVALID_REQUEST,
+            format!("{path} must be one of none, minimal, low, medium, high, xhigh, or max"),
+        )
+    })
 }
 
 pub(super) fn request_object(value: &Value) -> Result<&Map<String, Value>, ContractError> {

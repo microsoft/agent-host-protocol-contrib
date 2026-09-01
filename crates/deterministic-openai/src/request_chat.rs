@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use super::contract::{code, ContractError};
 use super::request::{
-    item_object, non_empty_string, parse_tools, request_object, required_array, required_object,
-    required_string, FixtureRequest, RequestMessage, ToolResult,
+    item_object, non_empty_string, optional_reasoning_effort, parse_tools, request_object,
+    required_array, required_object, required_string, FixtureRequest, RequestMessage, ToolResult,
 };
 
 pub(super) fn parse(value: Value) -> Result<FixtureRequest, ContractError> {
@@ -23,6 +23,7 @@ pub(super) fn parse(value: Value) -> Result<FixtureRequest, ContractError> {
         object,
         messages,
         parse_tools(object.get("tools"), tool_name)?,
+        optional_reasoning_effort(object.get("reasoning_effort"), "reasoning_effort")?,
     )
 }
 

@@ -11,7 +11,7 @@ use ahp_server_core::{SnapshotRequest, StoreConflict, StoreError};
 use ahp_types::common::ROOT_RESOURCE_URI;
 use ahp_types::state::{
     AgentCapabilities, AgentInfo, ChatState, ChatSummary, MultipleChatsCapability, RootState,
-    SessionLifecycle, SessionModelInfo, SessionState, SessionSummary, Snapshot, SnapshotState,
+    SessionLifecycle, SessionState, SessionSummary, Snapshot, SnapshotState,
 };
 
 impl RedbHostStore {
@@ -74,18 +74,7 @@ fn root_snapshot(
                 provider: "openai".into(),
                 display_name: "OpenAI-compatible".into(),
                 description: "A streaming OpenAI-compatible agent.".into(),
-                models: vec![SessionModelInfo {
-                    id: request.model_name.clone(),
-                    provider: "openai".into(),
-                    name: request.model_name,
-                    max_context_window: None,
-                    max_output_tokens: None,
-                    max_prompt_tokens: None,
-                    supports_vision: None,
-                    policy_state: None,
-                    config_schema: None,
-                    meta: None,
-                }],
+                models: request.model_catalog.models.clone(),
                 protected_resources: None,
                 customizations: None,
                 capabilities: Some(AgentCapabilities {
@@ -109,6 +98,10 @@ fn session_snapshot(
 ) -> Result<Snapshot, StoreError> {
     let summary = session_summary(read, &session)?;
     let chats = chat_summaries(read, &session.chats)?;
+    let model_selection = session
+        .model_selection
+        .clone()
+        .unwrap_or_else(|| request.model_catalog.default_selection.clone());
     Ok(Snapshot {
         resource: request.channel,
         from_seq,
@@ -130,7 +123,7 @@ fn session_snapshot(
             active_clients: Vec::new(),
             chats,
             default_chat: session.default_chat,
-            config: None,
+            config: Some(request.model_catalog.session_config_state(&model_selection)),
             customizations: None,
             changesets: None,
             input_needed: None,

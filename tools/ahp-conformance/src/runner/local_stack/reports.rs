@@ -1,5 +1,6 @@
 //! Case reporting and restart orchestration for the local stack.
 
+use super::super::model_config;
 use super::super::streaming::selection;
 use super::super::tools::{cancellation, replace, restart, shell, workspace};
 use super::super::{suite, CaseScope, ConformanceError, Report, RunOptions};
@@ -28,6 +29,45 @@ pub(super) async fn append_workspace_tool_cases(
         );
     } else {
         append_local_case(report, options, "workspace-validation", Ok(String::new()));
+    }
+
+    pub(super) async fn append_model_config_cases(
+        report: &mut Report,
+        target: &str,
+        options: &RunOptions,
+        stack: &LocalStack,
+    ) {
+        for name in [
+            "model-catalog",
+            "session-model-config",
+            "session-model-default",
+            "session-model-change",
+            "message-model-override",
+        ] {
+            if !suite::case_selected(&options.selected_cases, name) {
+                append_model_config_case(report, options, name, Ok(String::new()));
+                continue;
+            }
+            let result = match name {
+                "model-catalog" => model_config::model_catalog(target, options.timeout).await,
+                "session-model-config" => {
+                    model_config::session_model_config(target, options.timeout).await
+                }
+                "session-model-default" => {
+                    model_config::session_model_default(target, options.timeout, stack).await
+                }
+                "session-model-change" => {
+                    model_config::session_model_change(target, options.timeout, stack).await
+                }
+                "message-model-override" => {
+                    model_config::message_model_override(target, options.timeout, stack).await
+                }
+                _ => Err(ConformanceError::Options(
+                    "unknown local model configuration case".to_owned(),
+                )),
+            };
+            append_model_config_case(report, options, name, result);
+        }
     }
     if suite::case_selected(&options.selected_cases, "replace-string-tool") {
         append_local_case(
@@ -99,6 +139,16 @@ pub(super) async fn append_restart_cases(
         );
     }
     append_model_streaming_cases(report, options, stack).await;
+    if suite::case_selected(&options.selected_cases, "session-model-restart") {
+        append_model_config_case(
+            report,
+            options,
+            "session-model-restart",
+            model_config::session_model_restart(stack, options.timeout).await,
+        );
+    } else {
+        append_model_config_case(report, options, "session-model-restart", Ok(String::new()));
+    }
 }
 
 async fn persist_general_restart(
@@ -189,6 +239,27 @@ fn append_fixture_case(
             CaseScope::LocalFixtureSampleHost,
             "not selected",
         ));
+    }
+
+    fn append_model_config_case(
+        report: &mut Report,
+        options: &RunOptions,
+        name: &'static str,
+        result: Result<String, ConformanceError>,
+    ) {
+        if suite::case_selected(&options.selected_cases, name) {
+            report.cases.push(suite::case_result(
+                name,
+                CaseScope::LocalFixtureModelConfiguration,
+                result,
+            ));
+        } else {
+            report.cases.push(suite::skipped(
+                name,
+                CaseScope::LocalFixtureModelConfiguration,
+                "not selected",
+            ));
+        }
     }
 }
 

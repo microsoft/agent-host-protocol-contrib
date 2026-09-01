@@ -16,6 +16,23 @@ let model = OpenAiModel::new(ModelConfig::new(
 # Ok::<(), openai_agent_model::ModelError>(())
 ```
 
+## Model discovery and request selection
+
+`OpenAiModel::list_models()` requests `GET /v1/models` using the configured
+authentication and timeouts. It accepts a host root, `/v1`, or a full
+`/responses` or `/chat/completions` URL; returned `ModelDescriptor` values are
+sorted and deduplicated by ID. `ModelError::ModelsUnsupported` identifies only
+404, 405, and 501, so a host can explicitly retain its configured default;
+authentication, rate-limit, network, malformed-response, and other upstream
+failures remain errors.
+
+Use `ModelRequest::with_model_selection(ModelSelection::new("model"))` to
+override the configured model for one request. Add
+`ReasoningEffort::{None, Minimal, Low, Medium, High, XHigh, Max}` with
+`with_reasoning_effort`; it maps to `reasoning.effort` for Responses and
+`reasoning_effort` for Chat Completions. Without a selection, the configured
+model is used and no reasoning field is sent.
+
 ## API selection
 
 `ModelApi::Auto` is the default. It tries `/v1/responses` first and shares the

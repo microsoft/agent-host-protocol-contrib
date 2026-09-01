@@ -1,10 +1,14 @@
 //! Model rounds and stream consumption.
 
 use std::collections::{BTreeMap, HashSet};
+use std::str::FromStr;
 
-use ahp_types::state::ErrorInfo;
+use ahp_types::state::{ErrorInfo, ModelSelection};
 use futures_util::StreamExt;
-use openai_agent_model::{ModelError, ModelMessage, ModelRequest, ModelStreamEvent, ModelToolCall};
+use openai_agent_model::{
+    ModelError, ModelMessage, ModelRequest, ModelSelection as OpenAiModelSelection,
+    ModelStreamEvent, ModelToolCall, ReasoningEffort,
+};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -76,15 +80,19 @@ async fn run_turn_inner(
             )))
         }
     };
-    let mut request = ModelRequest {
-        messages: vec![ModelMessage::User {
-            content: format!(
+    let mut request = model_request_with_selection(
+        ModelRequest {
+            messages: vec![ModelMessage::User {
+                content: format!(
                 "The effective workspace is {}. Use server tools only within that workspace.\n\n{}",
                 started.workspace, started.message.text
             ),
-        }],
-        tools: host.inner.profile.model_tools(),
-    };
+            }],
+            tools: host.inner.profile.model_tools(),
+            model_selection: None,
+        },
+        &started.model_selection,
+    );
     let mut seen_ids = HashSet::new();
     let mut total_calls = 0_usize;
     loop {
@@ -95,6 +103,7 @@ async fn run_turn_inner(
         if reply.tool_calls.is_empty() {
             return TurnOutcome::Complete;
         }
+
         if total_calls.saturating_add(reply.tool_calls.len()) > MAX_TOOL_CALLS_PER_TURN {
             return TurnOutcome::Failed(TurnFailure::tool(
                 "model exceeded the maximum of eight tool calls per turn",
@@ -124,6 +133,19 @@ async fn run_turn_inner(
             });
         }
     }
+}
+
+fn model_request_with_selection(request: ModelRequest, selection: &ModelSelection) -> ModelRequest {
+    let reasoning_effort = selection
+        .config
+        .as_ref()
+        .and_then(|config| config.get("thinkingLevel"))
+        .and_then(Value::as_str)
+        .and_then(|level| ReasoningEffort::from_str(level).ok());
+    request.with_model_selection(OpenAiModelSelection {
+        id: selection.id.clone(),
+        reasoning_effort,
+    })
 }
 
 async fn next_reply(

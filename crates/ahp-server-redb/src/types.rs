@@ -2,8 +2,8 @@
 
 use ahp_types::common::Uri;
 use ahp_types::state::{
-    ActiveTurn, ChatSummary, ErrorInfo, MarkdownResponsePart, Message, ResponsePart, SessionStatus,
-    ToolCallState, Turn, TurnState,
+    ActiveTurn, ChatSummary, ErrorInfo, MarkdownResponsePart, Message, ModelSelection,
+    ResponsePart, SessionStatus, ToolCallState, Turn, TurnState,
 };
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,8 @@ pub(crate) struct PersistedSession {
     pub(crate) chats: Vec<Uri>,
     #[serde(default)]
     pub(crate) default_chat: Option<Uri>,
+    #[serde(default)]
+    pub(crate) model_selection: Option<ModelSelection>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

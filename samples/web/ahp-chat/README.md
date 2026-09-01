@@ -57,6 +57,21 @@ allow” is a host-side persisted setting for the exact command string, not ever
 invocation of that executable. Shell commands run on the host and their working
 directory is not a sandbox.
 
+## Models and reasoning
+
+The new-session form uses the root snapshot's advertised model catalogue; model
+names, IDs, and reasoning-level labels come from the host rather than this
+client. It resolves the session configuration with `resolveSessionConfig`
+before creating the session, passing the selected `values.model` object in
+`createSession.config` and the workspace in `workingDirectories`.
+
+The composer displays the selected session default and lets you change it when
+no turn is active. A change dispatches `session/configChanged` with
+`{ config: { model: { id, config? } } }`; the picker waits for the host's action
+or snapshot before showing the new value. **Model default** omits
+`thinkingLevel`. Each turn start also carries the authoritative session model,
+and its model/reasoning setting is shown beneath the historic user message.
+
 ## Choosing the WebSocket URL
 
 `src/ahp/runtime-config.ts` is the sole URL boundary. It resolves, in order:

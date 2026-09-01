@@ -143,10 +143,12 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
 
+    use clap::Parser;
     use deterministic_openai::RunningFixture;
     use openai_agent_model::{ModelApi, ModelConfig};
 
     use super::{ensure_web, DemoError, NpmRunner};
+    use crate::cli::Args;
     use crate::{AdvancedHost, AdvancedHostConfig};
 
     struct Artifact(PathBuf);
@@ -254,6 +256,7 @@ mod tests {
             bind: "127.0.0.1:0".parse()?,
             database_path: database.clone(),
             model: ModelConfig::new(fixture.base_url(), "fixture-model").with_api(ModelApi::Auto),
+            discover_models: true,
             workspace_roots: vec![workspace],
             reset_shell_approvals: false,
             chunk_size: 16,
@@ -269,6 +272,41 @@ mod tests {
         std::fs::remove_file(&renamed)?;
         let reopened = ahp_server_redb::RedbHostStore::open(&database)?;
         reopened.close()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn demo_fixture_discovers_multiple_model_choices(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = Artifact::new("demo-model-catalog");
+        let workspace = artifact.path().join("workspace");
+        std::fs::create_dir_all(&workspace)?;
+        let fixture = RunningFixture::start("127.0.0.1:0".parse()?).await?;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let args = Args::try_parse_from(["advanced-workspace-host", "--demo"])?;
+            let host = AdvancedHost::start(AdvancedHostConfig {
+                bind: "127.0.0.1:0".parse()?,
+                database_path: artifact.path().join("demo.redb"),
+                model: args.fixture_model_config(fixture.base_url()),
+                discover_models: true,
+                workspace_roots: vec![workspace],
+                reset_shell_approvals: false,
+                chunk_size: 16,
+                allowed_origins: Vec::new(),
+                web_root: None,
+            })
+            .await?;
+            assert_eq!(
+                host.model_summary(),
+                "Models: 3 available; default fixture-model"
+            );
+            host.shutdown().await?;
+            Ok(())
+        }
+        .await;
+        let fixture_result = fixture.shutdown().await;
+        result?;
+        fixture_result?;
         Ok(())
     }
 }

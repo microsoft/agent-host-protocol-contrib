@@ -30,6 +30,18 @@ The standard cases are:
 - `tool-cancellation` *(local only)* — cancellation of an approved delayed shell
   command before its side effect, including terminal pending-approval state
 - `upstream-error` *(local only)* — fixture upstream error propagation
+- `model-catalog` *(local only)* — discovered OpenAI models and their
+  model-specific `thinkingLevel` schemas
+- `session-model-config` *(local only)* — root model-config resolution,
+  validation, and filtered completions
+- `session-model-default` *(local only)* — resolved session defaults applied to
+  model-less turns and persisted turn history
+- `session-model-change` *(local only)* — accepted/rejected session changes,
+  replay, and active-turn isolation
+- `message-model-override` *(local only)* — per-message model selection without
+  mutating the session default
+- `session-model-restart` *(local only)* — selected defaults retained across an
+  advanced-host/redb restart
 - `persistence-restart` *(local only)* — session and completed-turn recovery
 - `responses-streaming` *(local only)* — true upstream text and function-argument
   streaming with an explicit Responses API host
@@ -46,7 +58,9 @@ profile (including `createChat`) exercised by this sample;
 `local-fixture-sample-host` covers deterministic upstream and general restart
 assertions; `local-fixture-workspace-tools` covers filesystem-sensitive tool
 probes; `local-fixture-model-streaming` covers explicit API routing and true
-upstream streaming. All cases marked local only require `--local-fixture`.
+upstream streaming; and `local-fixture-model-configuration` covers discovered
+models plus root, session, and per-message model configuration. All cases
+marked local only require `--local-fixture`.
 
 By default model text is not asserted, which makes the standard suite useful
 against a well-behaving real host/model. `--model-checks` enables exact output
@@ -65,11 +79,16 @@ end-to-end Auto success and Chat-only fallback while adapter unit tests cover
 the Responses preference. Auto falls back only for Responses HTTP `404`, `405`,
 or `501`; explicit `Responses` and `ChatCompletions` modes never fall back.
 
+The model-configuration probes use the dual fixture's fixed `/v1/models`
+response. The local stack does not inject catalog HTTP status failures; 404,
+405, and 501 fallback remains covered by the advanced-host unit tests.
+
 Internally, `runner/suite.rs` selects and reports cases, `basic.rs`, `turns.rs`,
-`advanced.rs`, and `tools/` own cohesive probe groups, and `probe.rs` owns
-WebSocket request correlation and bounded frame reads. The local stack only
-starts/stops the fixture/sample host and manages temporary files; every host
-assertion uses raw WebSocket JSON-RPC frames and never inspects host storage.
+`advanced.rs`, `model_config/`, and `tools/` own cohesive probe groups, and
+`probe.rs` owns WebSocket request correlation and bounded frame reads. The
+local stack only starts/stops the fixture/sample host and manages temporary
+files; every host assertion uses raw WebSocket JSON-RPC frames and never
+inspects host storage.
 
 **Audience:** host implementers verifying observable compatibility. Start with
 `src/main.rs`, then `src/runner.rs`, and use `--case` to isolate one scope.

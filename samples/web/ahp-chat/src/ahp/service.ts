@@ -1,22 +1,23 @@
 import {
   ActionType,
-  ConfirmationOptionKind,
   MessageKind,
-  ToolCallCancellationReason,
-  ToolCallConfirmationReason,
-  type ChatToolCallConfirmedAction,
   type URI,
 } from "@microsoft/agent-host-protocol"
 import type { AhpClient } from "@microsoft/agent-host-protocol/client"
 
 import { ConnectionManager } from "./connection-manager"
 import type { ConnectionCallbacks } from "./connection-events"
+import { SessionConfigRequests } from "./config-requests"
+import { modelSelectionFromConfig, toModelSelection, type ModelSelectionView } from "./model-config"
 import { displayError } from "./errors"
 import { persistentClientId, resourceUri, turnId } from "./ids"
 import { ConnectionEpoch } from "./lifecycle"
 import { AhpStore, type AppSnapshot } from "./store"
 import { saveLastSuccessfulUrl, validateWebSocketUrl } from "./runtime-config"
+import { ToolConfirmations, type ToolConfirmation } from "./tool-confirmations"
 import { saveLastWorkspaceInput, workspaceInputToFileUri } from "./workspace"
+
+export type { ToolConfirmation } from "./tool-confirmations"
 
 export interface AhpConnection {
   readonly activeClient?: Pick<AhpClient, "dispatch" | "request">
@@ -30,37 +31,32 @@ export interface AhpConnection {
 
 export type AhpConnectionFactory = (callbacks: ConnectionCallbacks) => AhpConnection
 
-export interface ToolConfirmation {
-  id: string
-  kind: ConfirmationOptionKind
-}
-
 export class AhpService {
   readonly store = new AhpStore()
   private readonly selectionEpoch = new ConnectionEpoch()
   private readonly connection: AhpConnection
-  private readonly submittedToolConfirmations = new Map<string, { chat: URI; turnId: string; toolCallId: string }>()
+  private readonly configRequests = new SessionConfigRequests(() => this.connection.activeClient, this.store)
+  private readonly toolConfirmations = new ToolConfirmations()
 
   constructor(connectionFactory: AhpConnectionFactory = (callbacks) => new ConnectionManager(persistentClientId(), callbacks)) {
     this.connection = connectionFactory({
       onConnection: (connection) => this.store.setConnection(connection),
       onSnapshot: (snapshot) => {
         this.store.applySnapshot(snapshot)
-        this.pruneSubmittedToolConfirmations()
+        if (snapshot.resource === this.store.getSnapshot().pendingSessionConfig) this.store.setPendingSessionConfig()
+        this.toolConfirmations.prune(this.store)
       },
       onEvent: (event) => {
         this.store.applyEvent(event)
-        this.pruneSubmittedToolConfirmations()
+        this.settleSessionConfigChange(event)
+        this.toolConfirmations.prune(this.store)
         this.connection.setLastSeenServerSeq(this.store.lastSeenServerSeq)
       },
       onReconnected: () => void this.refreshSessions(),
     })
   }
-
   getSnapshot = (): AppSnapshot => this.store.getSnapshot()
-
   subscribe = (listener: () => void): (() => void) => this.store.subscribe(listener)
-
   async connect(input: string): Promise<void> {
     let address: string
     try {
@@ -70,6 +66,7 @@ export class AhpService {
       return
     }
     this.selectionEpoch.invalidate()
+    this.configRequests.invalidate()
     this.store.reset()
     const connected = await this.connection.connect(address)
     if (!connected) return
@@ -77,13 +74,12 @@ export class AhpService {
     this.connection.setLastSeenServerSeq(this.store.lastSeenServerSeq)
     await this.refreshSessions()
   }
-
   async disconnect(): Promise<void> {
     this.selectionEpoch.invalidate()
+    this.configRequests.invalidate()
     await this.connection.disconnect()
     this.store.reset()
   }
-
   async refreshSessions(): Promise<void> {
     const client = this.connection.activeClient
     if (!client) return
@@ -91,11 +87,7 @@ export class AhpService {
       const sessions = []
       let cursor: string | undefined
       do {
-        const page = await client.request("listSessions", {
-          channel: this.store.rootChannel,
-          limit: 100,
-          cursor,
-        })
+        const page = await client.request("listSessions", { channel: this.store.rootChannel, limit: 100, cursor })
         if (this.connection.activeClient !== client) return
         sessions.push(...page.items)
         cursor = page.nextCursor
@@ -107,8 +99,9 @@ export class AhpService {
       if (this.connection.activeClient === client) this.store.setNotice(displayError(error))
     }
   }
-
-  async createSession(workspaceInput = ""): Promise<boolean> {
+  resolveSessionConfig = this.configRequests.resolve.bind(this.configRequests)
+  sessionConfigCompletions = this.configRequests.completions.bind(this.configRequests)
+  async createSession(workspaceInput = "", config?: Record<string, unknown>): Promise<boolean> {
     const token = this.selectionEpoch.begin()
     try {
       const session = resourceUri("session")
@@ -117,6 +110,7 @@ export class AhpService {
         channel: session,
         provider: "openai",
         ...(workingDirectories ? { workingDirectories } : {}),
+        ...(config && Object.keys(config).length ? { config } : {}),
       })
       if (!this.isCurrentSelection(token)) return false
       saveLastWorkspaceInput(workspaceInput)
@@ -128,7 +122,6 @@ export class AhpService {
       return false
     }
   }
-
   async createChat(): Promise<void> {
     const session = this.store.getSnapshot().selectedSession?.resource
     if (!session) return
@@ -143,7 +136,6 @@ export class AhpService {
       if (this.isCurrentSelection(token)) this.store.setNotice(displayError(error))
     }
   }
-
   async selectSession(session: URI, token = this.selectionEpoch.begin()): Promise<void> {
     if (!this.isCurrentSelection(token)) return
     this.store.setSelection(session)
@@ -159,7 +151,6 @@ export class AhpService {
       if (this.isCurrentSelection(token)) this.store.setNotice(displayError(error))
     }
   }
-
   async selectChat(session: URI, chat: URI, token = this.selectionEpoch.begin()): Promise<void> {
     if (!this.isCurrentSelection(token)) return
     this.store.setSelection(session, chat)
@@ -172,62 +163,16 @@ export class AhpService {
       if (this.isCurrentSelection(token)) this.store.setNotice(displayError(error))
     }
   }
-
-  sendPrompt(text: string): void {
-    const chat = this.store.getSnapshot().selectedChat
-    if (!chat || chat.activeTurn || !text.trim()) return
+  changeSessionModel(selection: ModelSelectionView): boolean {
+    const snapshot = this.store.getSnapshot()
+    const session = snapshot.selectedSession
+    if (!session || snapshot.selectedChat?.activeTurn || snapshot.pendingSessionConfig) return false
     try {
-      this.requireClient().dispatch(chat.resource, {
-        type: ActionType.ChatTurnStarted,
-        turnId: turnId(),
-        startedAt: new Date().toISOString(),
-        message: { text: text.trim(), origin: { kind: MessageKind.User } },
+      this.requireClient().dispatch(session.resource, {
+        type: ActionType.SessionConfigChanged,
+        config: { model: toModelSelection(selection) },
       })
-      this.store.setNotice(undefined)
-    } catch (error) {
-      this.store.setNotice(displayError(error))
-    }
-  }
-
-  cancelActiveTurn(): void {
-    const chat = this.store.getSnapshot().selectedChat
-    if (!chat?.activeTurn) return
-    try {
-      this.requireClient().dispatch(chat.resource, {
-        type: ActionType.ChatTurnCancelled,
-        turnId: chat.activeTurn.id,
-        duration: 0,
-      })
-    } catch (error) {
-      this.store.setNotice(displayError(error))
-    }
-  }
-
-  confirmToolCall(chat: URI, turnId: string, toolCallId: string, option: ToolConfirmation): boolean {
-    const key = `${chat}\0${turnId}\0${toolCallId}`
-    if (this.submittedToolConfirmations.has(key)) return false
-    try {
-      const action: ChatToolCallConfirmedAction = option.kind === ConfirmationOptionKind.Deny
-        ? {
-            type: ActionType.ChatToolCallConfirmed,
-            turnId,
-            toolCallId,
-            approved: false as const,
-            reason: ToolCallCancellationReason.Denied,
-            selectedOptionId: option.id,
-          }
-        : {
-            type: ActionType.ChatToolCallConfirmed,
-            turnId,
-            toolCallId,
-            approved: true as const,
-            selectedOptionId: option.id,
-            confirmed: option.id === "always-allow-command"
-              ? ToolCallConfirmationReason.Setting
-              : ToolCallConfirmationReason.UserAction,
-          }
-      this.requireClient().dispatch(chat, action)
-      this.submittedToolConfirmations.set(key, { chat, turnId, toolCallId })
+      this.store.setPendingSessionConfig(session.resource)
       this.store.setNotice(undefined)
       return true
     } catch (error) {
@@ -235,22 +180,59 @@ export class AhpService {
       return false
     }
   }
-
+  sendPrompt(text: string): void {
+    const snapshot = this.store.getSnapshot()
+    const chat = snapshot.selectedChat
+    if (!chat || chat.activeTurn || !text.trim()) return
+    const model = modelSelectionFromConfig(snapshot.selectedSession?.config?.values)
+    try {
+      this.requireClient().dispatch(chat.resource, {
+        type: ActionType.ChatTurnStarted,
+        turnId: turnId(),
+        startedAt: new Date().toISOString(),
+        message: {
+          text: text.trim(),
+          origin: { kind: MessageKind.User },
+          ...(model ? { model: toModelSelection(model) } : {}),
+        },
+      })
+      this.store.setNotice(undefined)
+    } catch (error) {
+      this.store.setNotice(displayError(error))
+    }
+  }
+  cancelActiveTurn(): void {
+    const chat = this.store.getSnapshot().selectedChat
+    if (!chat?.activeTurn) return
+    try {
+      this.requireClient().dispatch(chat.resource, { type: ActionType.ChatTurnCancelled, turnId: chat.activeTurn.id, duration: 0 })
+    } catch (error) {
+      this.store.setNotice(displayError(error))
+    }
+  }
+  confirmToolCall(chat: URI, turnId: string, toolCallId: string, option: ToolConfirmation): boolean {
+    try {
+      const submitted = this.toolConfirmations.submit(this.requireClient(), chat, turnId, toolCallId, option)
+      if (submitted) this.store.setNotice(undefined)
+      return submitted
+    } catch (error) {
+      this.store.setNotice(displayError(error))
+      return false
+    }
+  }
   private requireClient() {
     const client = this.connection.activeClient
     if (!client) throw new Error("Not connected to an AHP host.")
     return client
   }
-
   private isCurrentSelection(token: number): boolean {
     return this.selectionEpoch.isCurrent(token)
   }
-
-  private pruneSubmittedToolConfirmations(): void {
-    for (const [key, submitted] of this.submittedToolConfirmations) {
-      if (!this.store.isToolCallPendingConfirmation(submitted.chat, submitted.turnId, submitted.toolCallId)) {
-        this.submittedToolConfirmations.delete(key)
-      }
+  private settleSessionConfigChange(event: Parameters<ConnectionCallbacks["onEvent"]>[0]): void {
+    const pending = this.store.getSnapshot().pendingSessionConfig
+    if (event.type !== "action" || event.params.channel !== pending) return
+    if (event.params.rejectionReason || event.params.action.type === ActionType.SessionConfigChanged) {
+      this.store.setPendingSessionConfig()
     }
   }
 }

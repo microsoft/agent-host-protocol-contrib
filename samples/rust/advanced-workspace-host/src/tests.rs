@@ -7,9 +7,9 @@ use axum::body::{to_bytes, Body};
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use openai_agent_model::{ModelApi, ModelConfig};
+use openai_agent_model::{ModelApi, ModelConfig, ModelDescriptor, ModelError};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use super::{web, AdvancedHost, AdvancedHostConfig};
+use super::{model_catalog, web, AdvancedHost, AdvancedHostConfig, AdvancedHostError};
 
 struct Artifact(PathBuf);
 
@@ -40,6 +40,41 @@ impl Drop for Artifact {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+struct CatalogServer {
+    address: std::net::SocketAddr,
+    server: tokio::task::JoinHandle<()>,
+}
+
+impl CatalogServer {
+    async fn start(status: StatusCode, body: Value) -> Result<Self, std::io::Error> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let app = Router::new()
+            .route("/v1/models", get(catalog_response))
+            .with_state((status, body));
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok(Self { address, server })
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}", self.address)
+    }
+}
+
+impl Drop for CatalogServer {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+async fn catalog_response(
+    State((status, body)): State<(StatusCode, Value)>,
+) -> (StatusCode, Json<Value>) {
+    (status, Json(body))
 }
 
 struct DelayedModel {
@@ -80,6 +115,193 @@ impl Drop for DelayedModel {
 async fn delayed_responses(State(entered): State<Arc<Notify>>) -> StatusCode {
     entered.notify_one();
     std::future::pending().await
+}
+
+#[test]
+fn catalog_mapping_inserts_default_and_sorts_discovered_models(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let inserted_default = model_catalog(
+        "configured-default",
+        vec![
+            ModelDescriptor {
+                id: "zeta".into(),
+                owned_by: Some("example".into()),
+            },
+            ModelDescriptor {
+                id: "alpha".into(),
+                owned_by: None,
+            },
+        ],
+    )?;
+    assert_eq!(
+        inserted_default
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["configured-default", "alpha", "zeta"]
+    );
+    assert_eq!(inserted_default.default_selection.id, "configured-default");
+    assert_eq!(
+        inserted_default.models[0].name, "configured-default",
+        "the identifier is a readable label when discovery has no display name"
+    );
+    assert!(inserted_default.models[0].config_schema.is_some());
+
+    let sorted_catalog = model_catalog(
+        "middle",
+        vec![
+            ModelDescriptor {
+                id: "zeta".into(),
+                owned_by: None,
+            },
+            ModelDescriptor {
+                id: "middle".into(),
+                owned_by: None,
+            },
+            ModelDescriptor {
+                id: "alpha".into(),
+                owned_by: None,
+            },
+        ],
+    )?;
+    assert_eq!(
+        sorted_catalog
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "middle", "zeta"]
+    );
+    let fixture_catalog = model_catalog(
+        "fixture-model",
+        vec![
+            ModelDescriptor {
+                id: "fixture-reasoning".into(),
+                owned_by: None,
+            },
+            ModelDescriptor {
+                id: "fixture-model".into(),
+                owned_by: None,
+            },
+            ModelDescriptor {
+                id: "fixture-fast".into(),
+                owned_by: None,
+            },
+        ],
+    )?;
+    assert_eq!(fixture_catalog.default_selection.config, None);
+    let thinking_levels = |model_id: &str| {
+        let model = fixture_catalog
+            .models
+            .iter()
+            .find(|model| model.id == model_id)
+            .ok_or_else(|| std::io::Error::other("fixture model missing"))?;
+        Ok::<_, std::io::Error>(
+            serde_json::to_value(model)?
+                .pointer("/configSchema/properties/thinkingLevel/enum")
+                .cloned(),
+        )
+    };
+    assert_eq!(
+        thinking_levels("fixture-fast")?,
+        Some(json!(["none", "minimal", "low"]))
+    );
+    assert_eq!(
+        thinking_levels("fixture-model")?,
+        Some(json!(["minimal", "low", "medium", "high"]))
+    );
+    assert_eq!(
+        thinking_levels("fixture-reasoning")?,
+        Some(json!(["low", "medium", "high", "xhigh", "max"]))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsupported_model_catalog_route_falls_back_to_the_configured_default(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let artifact = Artifact::new("unsupported-model-catalog");
+    let workspace = artifact.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let catalog =
+        CatalogServer::start(StatusCode::NOT_FOUND, json!({"error": "unsupported"})).await?;
+    let host = AdvancedHost::start(AdvancedHostConfig {
+        bind: "127.0.0.1:0".parse()?,
+        database_path: artifact.path().join("host.redb"),
+        model: ModelConfig::new(catalog.base_url(), "configured-default"),
+        discover_models: true,
+        workspace_roots: vec![workspace],
+        reset_shell_approvals: false,
+        chunk_size: 16,
+        allowed_origins: Vec::new(),
+        web_root: None,
+    })
+    .await?;
+    assert_eq!(
+        host.model_summary(),
+        "Models: 1 available; default configured-default"
+    );
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_catalog_errors_fail_startup_without_creating_a_database(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let artifact = Artifact::new("model-catalog-error");
+    let workspace = artifact.path().join("workspace");
+    let database = artifact.path().join("host.redb");
+    std::fs::create_dir_all(&workspace)?;
+    let catalog = CatalogServer::start(
+        StatusCode::UNAUTHORIZED,
+        json!({"error": "authentication failed"}),
+    )
+    .await?;
+    let result = AdvancedHost::start(AdvancedHostConfig {
+        bind: "127.0.0.1:0".parse()?,
+        database_path: database.clone(),
+        model: ModelConfig::new(catalog.base_url(), "configured-default"),
+        discover_models: true,
+        workspace_roots: vec![workspace],
+        reset_shell_approvals: false,
+        chunk_size: 16,
+        allowed_origins: Vec::new(),
+        web_root: None,
+    })
+    .await;
+    assert!(matches!(
+        result,
+        Err(AdvancedHostError::Model(ModelError::Upstream { status, .. }))
+            if status == StatusCode::UNAUTHORIZED
+    ));
+    assert!(!database.exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_model_catalog_fails_startup() -> Result<(), Box<dyn std::error::Error>> {
+    let artifact = Artifact::new("malformed-model-catalog");
+    let workspace = artifact.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let catalog = CatalogServer::start(StatusCode::OK, json!({"data": "not an array"})).await?;
+    let result = AdvancedHost::start(AdvancedHostConfig {
+        bind: "127.0.0.1:0".parse()?,
+        database_path: artifact.path().join("host.redb"),
+        model: ModelConfig::new(catalog.base_url(), "configured-default"),
+        discover_models: true,
+        workspace_roots: vec![workspace],
+        reset_shell_approvals: false,
+        chunk_size: 16,
+        allowed_origins: Vec::new(),
+        web_root: None,
+    })
+    .await;
+    assert!(matches!(
+        result,
+        Err(AdvancedHostError::Model(ModelError::InvalidResponse(_)))
+    ));
+    Ok(())
 }
 
 #[tokio::test]
@@ -155,6 +377,7 @@ async fn starts_and_stops_on_an_ephemeral_port() -> Result<(), Box<dyn std::erro
         bind: "127.0.0.1:0".parse()?,
         database_path: artifact.path().join("host.redb"),
         model: ModelConfig::new("http://127.0.0.1:9", "test-model"),
+        discover_models: false,
         workspace_roots: vec![workspace],
         reset_shell_approvals: false,
         chunk_size: 16,
@@ -218,6 +441,7 @@ async fn shutdown_drains_a_delayed_turn_before_releasing_redb(
         bind: "127.0.0.1:0".parse()?,
         database_path: database.clone(),
         model: ModelConfig::new(model.base_url(), "test-model").with_api(ModelApi::Responses),
+        discover_models: true,
         workspace_roots: vec![workspace],
         reset_shell_approvals: false,
         chunk_size: 16,

@@ -14,6 +14,7 @@ import type {
   ConversationPartView,
   ConversationTurn,
 } from "./projection-types"
+import { modelSelectionFromConfig, projectSessionConfig, type SessionConfigView } from "./model-config"
 import { projectToolCall } from "./tool-projection"
 
 export interface SessionListItem {
@@ -41,6 +42,7 @@ export interface SelectedSessionView {
   defaultChat?: string
   workingDirectories: readonly string[]
   serverTools: readonly string[]
+  config?: SessionConfigView
 }
 
 export interface ChatView {
@@ -89,6 +91,7 @@ function projectTurn(turn: Turn): ConversationTurn {
   return {
     id: turn.id,
     userText: turn.message.text,
+    model: modelSelectionFromConfig({ model: turn.message.model }),
     assistantText: responseText(turn.responseParts),
     responseParts: projectResponseParts(turn.responseParts),
     state: turn.state,
@@ -102,6 +105,7 @@ function projectActiveTurn(chat: ChatState): ConversationTurn | undefined {
   return {
     id: turn.id,
     userText: turn.message.text,
+    model: modelSelectionFromConfig({ model: turn.message.model }),
     assistantText: responseText(turn.responseParts),
     responseParts: projectResponseParts(turn.responseParts),
     state: "streaming",
@@ -136,6 +140,7 @@ export function projectSession(session: SessionState): SelectedSessionView {
     defaultChat: session.defaultChat,
     workingDirectories: [...(session.workingDirectories ?? [])],
     serverTools: (session.serverTools ?? []).map((tool) => tool.name),
+    config: projectSessionConfig(session.config),
   }
 }
 

@@ -6,8 +6,8 @@ use serde_json::{Map, Value};
 
 use super::contract::{code, ContractError};
 use super::request::{
-    item_object, non_empty_string, parse_tools, request_object, required_array, required_string,
-    FixtureRequest, RequestMessage, ToolResult,
+    item_object, non_empty_string, parse_tools, reasoning_effort, request_object, required_array,
+    required_string, FixtureRequest, RequestMessage, ToolResult,
 };
 
 pub(super) fn parse(value: Value) -> Result<FixtureRequest, ContractError> {
@@ -23,7 +23,27 @@ pub(super) fn parse(value: Value) -> Result<FixtureRequest, ContractError> {
         object,
         messages,
         parse_tools(object.get("tools"), tool_name)?,
+        parse_reasoning_effort(object)?,
     )
+}
+
+fn parse_reasoning_effort(object: &Map<String, Value>) -> Result<Option<String>, ContractError> {
+    let Some(reasoning) = object.get("reasoning") else {
+        return Ok(None);
+    };
+    let reasoning = reasoning.as_object().ok_or_else(|| {
+        ContractError::new(
+            code::INVALID_REQUEST,
+            "reasoning must be an object when supplied",
+        )
+    })?;
+    let effort = reasoning.get("effort").ok_or_else(|| {
+        ContractError::new(
+            code::INVALID_REQUEST,
+            "reasoning.effort is required when reasoning is supplied",
+        )
+    })?;
+    reasoning_effort(effort, "reasoning.effort").map(Some)
 }
 
 fn parse_item(

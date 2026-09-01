@@ -44,17 +44,25 @@ pub(super) struct Session {
     pub(super) workspace: Uri,
     pub(super) created_at: String,
     pub(super) ready: bool,
+    pub(super) model_selection: ahp_types::state::ModelSelection,
     pub(super) chats: Vec<Uri>,
 }
 
 impl Session {
-    pub(super) fn new(uri: Uri, provider: String, workspace: Uri, created_at: String) -> Self {
+    pub(super) fn new(
+        uri: Uri,
+        provider: String,
+        workspace: Uri,
+        created_at: String,
+        model_selection: ahp_types::state::ModelSelection,
+    ) -> Self {
         Self {
             uri,
             provider,
             workspace,
             created_at,
             ready: false,
+            model_selection,
             chats: Vec::new(),
         }
     }

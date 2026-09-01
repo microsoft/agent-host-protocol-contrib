@@ -9,10 +9,12 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ahp_server_core::{CoreConfig, CoreHost, CoreHostError, HostStore, WorkspaceAgentProfile};
+use ahp_server_core::{
+    CoreConfig, CoreHost, CoreHostError, HostStore, ModelCatalog, WorkspaceAgentProfile,
+};
 use ahp_server_redb::RedbHostStore;
 use ahp_server_ws::{router, WsError, WsOptions};
-use openai_agent_model::{ModelConfig, ModelError, OpenAiModel};
+use openai_agent_model::{ModelConfig, ModelDescriptor, ModelError, OpenAiModel};
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::task::JoinError;
@@ -32,6 +34,8 @@ pub struct AdvancedHostConfig {
     pub database_path: PathBuf,
     /// OpenAI-compatible streaming model configuration.
     pub model: ModelConfig,
+    /// Whether to query the endpoint's `/v1/models` catalog before serving.
+    pub discover_models: bool,
     /// Existing directories sessions may select as workspaces.
     pub workspace_roots: Vec<PathBuf>,
     /// Clears persisted exact-command approvals before accepting connections.
@@ -84,6 +88,10 @@ impl AdvancedHost {
             ConfiguredWorkspaces::new(config.workspace_roots)?
         };
         let profile = Arc::new(WorkspaceAgentProfile::new(workspaces));
+        let default_model = config.model.model.clone();
+        let model = Arc::new(OpenAiModel::new(config.model)?);
+        let model_catalog =
+            discover_model_catalog(&model, &default_model, config.discover_models).await?;
         create_database_parent(&config.database_path)?;
         let store = Arc::new(
             RedbHostStore::open(&config.database_path)
@@ -94,13 +102,14 @@ impl AdvancedHost {
                 .reset_command_approvals()
                 .map_err(|error| AdvancedHostError::Store(error.to_string()))?;
         }
-        let model = Arc::new(OpenAiModel::new(config.model)?);
-        let core = CoreHost::new(
+        let model_count = model_catalog.models.len();
+        let core = CoreHost::with_model_catalog(
             CoreConfig {
                 server_name: SERVER_NAME.to_owned(),
                 max_delta_scalars: config.chunk_size,
                 outbound_queue_capacity: OUTBOUND_QUEUE_CAPACITY,
             },
+            model_catalog,
             store.clone(),
             model,
             profile,
@@ -132,6 +141,8 @@ impl AdvancedHost {
             shutdown,
             server: Some(server),
             web_status: web.status,
+            model_count,
+            default_model,
         })
     }
 }
@@ -144,6 +155,8 @@ pub struct RunningAdvancedHost {
     shutdown: ahp_server_core::Shutdown,
     server: Option<tokio::task::JoinHandle<Result<(), std::io::Error>>>,
     web_status: WebStatus,
+    model_count: usize,
+    default_model: String,
 }
 
 impl RunningAdvancedHost {
@@ -163,6 +176,15 @@ impl RunningAdvancedHost {
     #[must_use]
     pub const fn web_status(&self) -> WebStatus {
         self.web_status
+    }
+
+    /// Returns the discovered model count and configured default model identifier.
+    #[must_use]
+    pub fn model_summary(&self) -> String {
+        format!(
+            "Models: {} available; default {}",
+            self.model_count, self.default_model
+        )
     }
 
     /// Stops the transport, drains active turns, and releases the redb file handle.
@@ -201,6 +223,89 @@ fn create_database_parent(path: &Path) -> Result<(), std::io::Error> {
         std::fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+async fn discover_model_catalog(
+    model: &OpenAiModel,
+    default_model: &str,
+    discover_models: bool,
+) -> Result<ModelCatalog, AdvancedHostError> {
+    let descriptors = if discover_models {
+        match model.list_models().await {
+            Ok(descriptors) => descriptors,
+            Err(ModelError::ModelsUnsupported { status, .. }) => {
+                eprintln!(
+                    "Model discovery is unavailable (HTTP {status}); using only configured default {default_model}."
+                );
+                Vec::new()
+            }
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        Vec::new()
+    };
+    model_catalog(default_model, descriptors)
+}
+
+fn model_catalog(
+    default_model: &str,
+    mut descriptors: Vec<ModelDescriptor>,
+) -> Result<ModelCatalog, AdvancedHostError> {
+    descriptors.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.owned_by.cmp(&right.owned_by))
+    });
+    descriptors.dedup_by(|left, right| left.id == right.id);
+    if !descriptors
+        .iter()
+        .any(|descriptor| descriptor.id == default_model)
+    {
+        descriptors.insert(
+            0,
+            ModelDescriptor {
+                id: default_model.to_owned(),
+                owned_by: None,
+            },
+        );
+    }
+
+    Ok(ModelCatalog::from_model_descriptors_with_thinking_levels(
+        descriptors,
+        default_model,
+        |descriptor| thinking_levels_for(&descriptor.id).iter().copied(),
+    )
+    .map_err(CoreHostError::from)?)
+}
+
+fn thinking_levels_for(model_id: &str) -> &'static [&'static str] {
+    const FAST: &[&str] = &["none", "minimal", "low"];
+    const GENERAL: &[&str] = &["minimal", "low", "medium", "high"];
+    const ADVANCED: &[&str] = &["low", "medium", "high", "xhigh"];
+    const EXTENDED: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+    const GPT_5_1_OR_5_2: &[&str] = &["none", "minimal", "low", "medium", "high"];
+
+    let model_id = model_id.to_ascii_lowercase();
+    if model_id.contains("fixture-fast") || model_id.contains("mini") || model_id.contains("nano") {
+        FAST
+    } else if model_id.contains("fixture-reasoning")
+        || model_id.starts_with("gpt-5.6")
+        || model_id.contains("max")
+    {
+        EXTENDED
+    } else if model_id.starts_with("gpt-5.5")
+        || model_id.starts_with("gpt-5.4")
+        || model_id.starts_with("gpt-5.3")
+        || model_id.starts_with("o1")
+        || model_id.starts_with("o3")
+        || model_id.starts_with("o4")
+    {
+        ADVANCED
+    } else if model_id.starts_with("gpt-5.1") || model_id.starts_with("gpt-5.2") {
+        GPT_5_1_OR_5_2
+    } else {
+        GENERAL
+    }
 }
 
 #[cfg(test)]

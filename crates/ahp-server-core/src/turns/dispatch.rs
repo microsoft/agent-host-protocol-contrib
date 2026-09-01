@@ -1,13 +1,13 @@
 //! Validation and dispatch of client lifecycle actions.
 
-use ahp_types::actions::{ChatTurnStartedAction, StateAction};
+use ahp_types::actions::{ChatTurnStartedAction, SessionConfigChangedAction, StateAction};
 use ahp_types::state::MessageKind;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::{confirmation::confirm_tool, model::run_turn, reject};
 use crate::host::{CoreHost, TurnKey};
-use crate::store::{FinishTurn, TurnStart};
+use crate::store::{FinishTurn, TurnStart, UpdateSessionConfig};
 
 pub(crate) async fn dispatch_action(host: &CoreHost, peer_id: u64, params: Value) {
     let Some(channel) = params
@@ -33,6 +33,9 @@ pub(crate) async fn dispatch_action(host: &CoreHost, peer_id: u64, params: Value
     {
         "chat/turnStarted" => start_turn(host, &channel, action_value, action, origin).await,
         "chat/turnCancelled" => cancel_turn(host, &channel, action_value, action, origin).await,
+        "session/configChanged" => {
+            change_session_config(host, peer_id, &channel, action_value, action, origin).await
+        }
         "chat/toolCallConfirmed" => {
             confirm_tool(host, peer_id, &channel, action_value, action, origin).await
         }
@@ -86,6 +89,12 @@ async fn start_turn(
             return;
         }
     };
+    if let Some(selection) = &start.message.model {
+        if let Err(error) = host.inner.model_catalog.validate_selection(selection) {
+            reject(host, channel.into(), action, origin, error).await;
+            return;
+        }
+    }
     let _guard = host.inner.publish_lock.lock().await;
     if host.inner.shutdown.token().is_cancelled() {
         return;
@@ -94,6 +103,7 @@ async fn start_turn(
         chat: channel.into(),
         action: start,
         origin: origin.clone(),
+        legacy_default_selection: host.inner.model_catalog.default_selection.clone(),
     }) {
         Ok(transition) => {
             host.fanout(&transition).await;
@@ -113,6 +123,81 @@ async fn start_turn(
                 .await
                 .spawn(async move { run_turn(task_host, started, cancellation).await });
         }
+        Err(error) => {
+            drop(_guard);
+            reject(host, channel.into(), action, origin, error).await;
+        }
+    }
+}
+
+async fn change_session_config(
+    host: &CoreHost,
+    peer_id: u64,
+    channel: &str,
+    raw: Value,
+    action: StateAction,
+    origin: Option<ahp_types::actions::ActionOrigin>,
+) {
+    if !channel.starts_with("ahp-session:/") || !host.peer_is_subscribed(peer_id, channel).await {
+        reject(
+            host,
+            channel.into(),
+            action,
+            origin,
+            "session/configChanged requires a subscribed session channel",
+        )
+        .await;
+        return;
+    }
+    let changed = match serde_json::from_value::<SessionConfigChangedAction>(raw) {
+        Ok(changed)
+            if changed
+                .config
+                .get("model")
+                .and_then(Value::as_object)
+                .and_then(|model| model.get("id"))
+                .and_then(Value::as_str)
+                .is_some() =>
+        {
+            changed
+        }
+        Ok(_) => {
+            reject(
+                host,
+                channel.into(),
+                action,
+                origin,
+                "session/configChanged requires the complete model selection",
+            )
+            .await;
+            return;
+        }
+        Err(error) => {
+            reject(
+                host,
+                channel.into(),
+                action,
+                origin,
+                format!("invalid session/configChanged: {error}"),
+            )
+            .await;
+            return;
+        }
+    };
+    let selection = match host.inner.model_catalog.resolve(Some(&changed.config)) {
+        Ok(selection) => selection,
+        Err(error) => {
+            reject(host, channel.into(), action, origin, error).await;
+            return;
+        }
+    };
+    let _guard = host.inner.publish_lock.lock().await;
+    match host.inner.store.update_session_config(UpdateSessionConfig {
+        session: channel.into(),
+        model_selection: selection,
+        origin: origin.clone(),
+    }) {
+        Ok(transition) => host.fanout(&transition).await,
         Err(error) => {
             drop(_guard);
             reject(host, channel.into(), action, origin, error).await;

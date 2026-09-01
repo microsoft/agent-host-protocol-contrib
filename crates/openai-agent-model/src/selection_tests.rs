@@ -8,7 +8,9 @@ use axum::routing::post;
 use axum::Router;
 
 use crate::test_support::start_server;
-use crate::{AgentModel, ModelApi, ModelConfig, ModelError, OpenAiModel};
+use crate::{
+    AgentModel, ModelApi, ModelConfig, ModelError, ModelRequest, ModelSelection, OpenAiModel,
+};
 
 #[tokio::test]
 async fn auto_falls_back_only_for_documented_unsupported_statuses(
@@ -122,6 +124,22 @@ async fn auto_never_falls_back_after_a_successful_malformed_responses_stream(
         .expect_err("a malformed Responses stream must fail without fallback");
     assert!(matches!(error, ModelError::InvalidResponse(_)));
     assert_eq!(state.responses.load(Ordering::Relaxed), 1);
+    assert_eq!(state.chat.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejects_an_empty_per_request_model_before_dispatching_http(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = TestState::new(StatusCode::OK);
+    let client = client(start_server(app(state.clone())).await?, ModelApi::Responses)?;
+    let request = ModelRequest::text("x").with_model_selection(ModelSelection::new(" \t"));
+    let error = match client.stream(&request).await {
+        Ok(_) => return Err("empty selected model must fail".into()),
+        Err(error) => error,
+    };
+    assert!(matches!(error, ModelError::InvalidModelSelection { .. }));
+    assert_eq!(state.responses.load(Ordering::Relaxed), 0);
     assert_eq!(state.chat.load(Ordering::Relaxed), 0);
     Ok(())
 }

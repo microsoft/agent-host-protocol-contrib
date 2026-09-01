@@ -38,6 +38,14 @@ pub(super) async fn process_request(
             require_initialized(host, peer_id).await?;
             session::list_sessions(host, params(&request)?)
         }
+        "resolveSessionConfig" => {
+            require_initialized(host, peer_id).await?;
+            session::resolve_session_config(host, params(&request)?)
+        }
+        "sessionConfigCompletions" => {
+            require_initialized(host, peer_id).await?;
+            session::session_config_completions(host, params(&request)?)
+        }
         "createSession" => {
             require_initialized(host, peer_id).await?;
             session::create_session(host, params(&request)?).await
@@ -93,7 +101,7 @@ pub(super) fn snapshot(
         .store
         .snapshot(SnapshotRequest {
             channel,
-            model_name: host.inner.model.model_name().into(),
+            model_catalog: host.inner.model_catalog.clone(),
             server_tools: host.inner.profile.server_tools(),
         })
         .map_err(RpcFault::store)

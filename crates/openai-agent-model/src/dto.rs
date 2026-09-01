@@ -2,26 +2,54 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::{ModelApi, ModelMessage, ModelRequest, ModelToolCall, ModelToolDefinition};
+use crate::{ModelApi, ModelError, ModelMessage, ModelRequest, ModelToolCall, ModelToolDefinition};
 
-pub(crate) fn request_json(api: ModelApi, model: &str, request: &ModelRequest) -> Value {
+pub(crate) fn request_json(
+    api: ModelApi,
+    configured_model: &str,
+    request: &ModelRequest,
+) -> Result<Value, ModelError> {
+    let (model, reasoning_effort) = request.selected_model(configured_model)?;
     match api {
-        ModelApi::Responses | ModelApi::Auto => responses_json(model, request),
-        ModelApi::ChatCompletions => chat_completions_json(model, request),
+        ModelApi::Responses | ModelApi::Auto => {
+            Ok(responses_json(model, reasoning_effort, request))
+        }
+        ModelApi::ChatCompletions => Ok(chat_completions_json(model, reasoning_effort, request)),
     }
 }
 
-fn chat_completions_json(model: &str, request: &ModelRequest) -> Value {
-    json!({
-        "model": model,
-        "messages": request.messages.iter().map(chat_message_json).collect::<Vec<_>>(),
-        "tools": request.tools.iter().map(chat_tool_json).collect::<Vec<_>>(),
-        "parallel_tool_calls": false,
-        "stream": true,
-    })
+fn chat_completions_json(
+    model: &str,
+    reasoning_effort: Option<crate::ReasoningEffort>,
+    request: &ModelRequest,
+) -> Value {
+    let mut object = Map::from_iter([
+        ("model".to_owned(), json!(model)),
+        (
+            "messages".to_owned(),
+            Value::Array(request.messages.iter().map(chat_message_json).collect()),
+        ),
+        (
+            "tools".to_owned(),
+            Value::Array(request.tools.iter().map(chat_tool_json).collect()),
+        ),
+        ("parallel_tool_calls".to_owned(), json!(false)),
+        ("stream".to_owned(), json!(true)),
+    ]);
+    if let Some(reasoning_effort) = reasoning_effort {
+        object.insert(
+            "reasoning_effort".to_owned(),
+            json!(reasoning_effort.as_str()),
+        );
+    }
+    Value::Object(object)
 }
 
-fn responses_json(model: &str, request: &ModelRequest) -> Value {
+fn responses_json(
+    model: &str,
+    reasoning_effort: Option<crate::ReasoningEffort>,
+    request: &ModelRequest,
+) -> Value {
     let mut input = Vec::new();
     for message in &request.messages {
         match message {
@@ -49,13 +77,23 @@ fn responses_json(model: &str, request: &ModelRequest) -> Value {
             }
         }
     }
-    json!({
-        "model": model,
-        "input": input,
-        "tools": request.tools.iter().map(responses_tool_json).collect::<Vec<_>>(),
-        "parallel_tool_calls": false,
-        "stream": true,
-    })
+    let mut object = Map::from_iter([
+        ("model".to_owned(), json!(model)),
+        ("input".to_owned(), Value::Array(input)),
+        (
+            "tools".to_owned(),
+            Value::Array(request.tools.iter().map(responses_tool_json).collect()),
+        ),
+        ("parallel_tool_calls".to_owned(), json!(false)),
+        ("stream".to_owned(), json!(true)),
+    ]);
+    if let Some(reasoning_effort) = reasoning_effort {
+        object.insert(
+            "reasoning".to_owned(),
+            json!({ "effort": reasoning_effort.as_str() }),
+        );
+    }
+    Value::Object(object)
 }
 
 fn chat_message_json(message: &ModelMessage) -> Value {

@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ahp_server_core::{
-    AgentProfile, CoreConfig, CoreHost, HostStore, MemoryHostStore, ProfileError, ProfileFuture,
-    SnapshotRequest, WorkspaceAgentProfile,
+    AgentProfile, CoreConfig, CoreHost, HostStore, MemoryHostStore, ModelCatalog, ProfileError,
+    ProfileFuture, SnapshotRequest, WorkspaceAgentProfile,
 };
 use ahp_types::common::Uri;
 use ahp_types::state::SnapshotState;
@@ -175,7 +175,7 @@ async fn initialized_session(
     let snapshot = store
         .snapshot(SnapshotRequest {
             channel: "ahp-session:/test".into(),
-            model_name: "fake".into(),
+            model_catalog: ModelCatalog::single("fake"),
             server_tools: Vec::new(),
         })
         .expect("session snapshot");
@@ -292,7 +292,7 @@ async fn duplicate_id_from_later_model_round_errors_and_clears_active_turn() {
     let snapshot = store
         .snapshot(SnapshotRequest {
             channel: chat,
-            model_name: "fake".into(),
+            model_catalog: ModelCatalog::single("fake"),
             server_tools: Vec::new(),
         })
         .expect("chat snapshot");
@@ -385,7 +385,7 @@ async fn cancellation_terminalizes_a_quiescent_stream() {
     let snapshot = store
         .snapshot(SnapshotRequest {
             channel: chat,
-            model_name: "fake".into(),
+            model_catalog: ModelCatalog::single("fake"),
             server_tools: Vec::new(),
         })
         .expect("chat snapshot");
