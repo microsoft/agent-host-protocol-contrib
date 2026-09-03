@@ -213,6 +213,14 @@ pub fn file_uri_path(uri: &str) -> Result<PathBuf, WorkspaceError> {
     if parsed.scheme() != "file" {
         return Err(WorkspaceError::NonFileUri);
     }
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(WorkspaceError::InvalidFileUri);
+    }
     parsed
         .to_file_path()
         .map_err(|_| WorkspaceError::InvalidFileUri)

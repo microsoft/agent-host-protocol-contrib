@@ -17,8 +17,13 @@ pub type ModelRequestFuture<'a> =
 
 /// A streaming model port suitable for application dependency injection.
 pub trait AgentModel: Send + Sync {
-    /// Returns the configured model identifier.
-    fn model_name(&self) -> &str;
+    /// Returns the model used when a request does not select one explicitly.
+    fn default_model(&self) -> Option<&str>;
+
+    /// Stable upstream scope for persisted Responses API continuation IDs.
+    fn response_chain_scope(&self) -> Option<&str> {
+        None
+    }
 
     /// Starts an incrementally decoded completion request.
     fn stream<'a>(&'a self, request: &'a ModelRequest) -> ModelRequestFuture<'a>;
@@ -31,6 +36,7 @@ pub struct OpenAiModel {
     pub(crate) config: ModelConfig,
     pub(crate) endpoints: EndpointUrls,
     auto_selection: Arc<Mutex<Option<ModelApi>>>,
+    response_chain_scope: Option<String>,
 }
 
 /// Compatibility name for [`OpenAiModel`].
@@ -44,11 +50,16 @@ impl OpenAiModel {
         let client = reqwest::Client::builder()
             .connect_timeout(config.timeouts.connect)
             .build()?;
+        let responses_available = endpoints.forced_api() != Some(ModelApi::ChatCompletions)
+            && config.api != ModelApi::ChatCompletions;
+        let response_chain_scope = (config.response_chaining && responses_available)
+            .then(|| endpoints.url(ModelApi::Responses).to_owned());
         Ok(Self {
             client,
             config,
             endpoints,
             auto_selection: Arc::new(Mutex::new(None)),
+            response_chain_scope,
         })
     }
 
@@ -58,9 +69,10 @@ impl OpenAiModel {
         Self::new(config)
     }
 
-    /// Returns the configured model identifier.
-    pub fn model_name(&self) -> &str {
-        &self.config.model
+    /// Returns the model used when a request does not select one explicitly.
+    #[must_use]
+    pub fn default_model(&self) -> Option<&str> {
+        self.config.model.as_deref()
     }
 
     /// Returns the configured protocol selection before full-endpoint implication.
@@ -117,8 +129,12 @@ impl OpenAiModel {
 }
 
 impl AgentModel for OpenAiModel {
-    fn model_name(&self) -> &str {
-        Self::model_name(self)
+    fn default_model(&self) -> Option<&str> {
+        Self::default_model(self)
+    }
+
+    fn response_chain_scope(&self) -> Option<&str> {
+        self.response_chain_scope.as_deref()
     }
 
     fn stream<'a>(&'a self, request: &'a ModelRequest) -> ModelRequestFuture<'a> {
@@ -133,9 +149,13 @@ fn validate_config(config: &ModelConfig) -> Result<(), ModelError> {
             reason: "the URL must not be empty".to_owned(),
         });
     }
-    if config.model.trim().is_empty() {
+    if config
+        .model
+        .as_deref()
+        .is_some_and(|model| model.trim().is_empty())
+    {
         return Err(ModelError::InvalidResponse(
-            "a non-empty model name is required".to_owned(),
+            "a configured default model must not be empty".to_owned(),
         ));
     }
     validate_timeouts(config.timeouts)

@@ -18,9 +18,10 @@ pub use memory::MemoryHostStore;
 pub use model_catalog::{ModelCatalog, ModelCatalogError};
 pub use profile::{AgentProfile, ProfileError, ProfileFuture, WorkspaceAgentProfile};
 pub use store::{
-    ActionReplay, ApprovalKey, CommittedTransition, CreateChat, CreateSession, CreatedSession,
-    DisposedSession, FinishTurn, HostStore, MarkSessionReady, SnapshotRequest, StartedTurn,
-    StoreConflict, StoreError, ToolCallTransition, ToolPhase, TurnStart, UpdateSessionConfig,
+    ActionReplay, ApprovalKey, ChangeDraft, CommittedTransition, CreateChat, CreateSession,
+    CreatedSession, DisposedSession, DraftTurnPrecondition, FinishTurn, HostStore,
+    MarkSessionReady, ModelCursor, SnapshotRequest, StartedTurn, StoreConflict, StoreError,
+    ToolCallTransition, ToolPhase, TurnStart, UpdateSessionConfig,
 };
 
 pub use ahp_types;

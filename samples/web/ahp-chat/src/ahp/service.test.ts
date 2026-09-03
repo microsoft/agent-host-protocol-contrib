@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { ConnectionCallbacks } from "./connection-events"
 import { AhpService, type AhpConnection } from "./service"
+import type { TabIdentityProvider } from "./tab-identity"
 
 const sessionA = "ahp-session:/a"
 const sessionB = "ahp-session:/b"
@@ -181,5 +182,34 @@ describe("AhpService selection lifecycle", () => {
       selectedOptionId: "always-allow-command",
       confirmed: "setting",
     })
+  })
+
+  it("does not open a stale address while its tab identity is resolving", async () => {
+    let resolveIdentity: ((id: string) => void) | undefined
+    const uniqueId = new Promise<string>((resolve) => { resolveIdentity = resolve })
+    const identity: TabIdentityProvider = {
+      uniqueTabClientId: vi.fn(() => uniqueId),
+      dispose: vi.fn(),
+    }
+    const connection: AhpConnection = {
+      connect: vi.fn(async () => true),
+      disconnect: vi.fn(async () => {}),
+      refresh: vi.fn(async () => {}),
+      reconcileActiveSubscriptions: vi.fn(async () => {}),
+      setClientId: vi.fn(),
+      setLastSeenServerSeq: vi.fn(),
+      subscribe: vi.fn(async () => {}),
+    }
+    const service = new AhpService(() => connection, "candidate-id", identity)
+
+    const first = service.connect("ws://first.test/ahp")
+    const second = service.connect("ws://second.test/ahp")
+    expect(connection.connect).not.toHaveBeenCalled()
+    resolveIdentity?.("unique-id")
+    await Promise.all([first, second])
+
+    expect(connection.setClientId).toHaveBeenCalledWith("unique-id")
+    expect(connection.connect).toHaveBeenCalledExactlyOnceWith("ws://second.test/ahp")
+    await service.dispose()
   })
 })

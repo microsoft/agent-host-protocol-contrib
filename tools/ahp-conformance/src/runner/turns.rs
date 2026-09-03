@@ -17,7 +17,7 @@ pub(super) async fn streaming_lifecycle(
     exact_output: bool,
 ) -> Result<String, ConformanceError> {
     let mut probe = Probe::connect(target, timeout_duration).await?;
-    let (_session, chat) = ready_chat(&mut probe, "stream").await?;
+    let (_session, chat, _) = ready_chat(&mut probe, "stream").await?;
     probe
         .request("subscribe", json!({ "channel": chat }))
         .await?;
@@ -98,7 +98,7 @@ pub(super) async fn cancellation(
     exact_output: bool,
 ) -> Result<String, ConformanceError> {
     let mut probe = Probe::connect(target, timeout_duration).await?;
-    let (_session, chat) = ready_chat(&mut probe, "cancel").await?;
+    let (_session, chat, _) = ready_chat(&mut probe, "cancel").await?;
     probe
         .request("subscribe", json!({ "channel": chat }))
         .await?;

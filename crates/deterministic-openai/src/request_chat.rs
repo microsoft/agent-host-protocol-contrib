@@ -65,7 +65,12 @@ fn parse_message(
                     parse_tool_call(index, call_index, call, call_ids)?;
                 }
             }
-            Ok(RequestMessage::Other)
+            Ok(object
+                .get("content")
+                .and_then(Value::as_str)
+                .map_or(RequestMessage::Other, |content| {
+                    RequestMessage::Assistant(content.to_owned())
+                }))
         }
         "tool" => {
             reject_role_field(object, index, "tool_calls")?;

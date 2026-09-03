@@ -2,6 +2,8 @@
 
 mod confirmation;
 mod dispatch;
+mod draft;
+mod history;
 mod model;
 mod tool;
 
@@ -29,7 +31,9 @@ pub(crate) enum ApprovalDecision {
 }
 
 pub(crate) enum TurnOutcome {
-    Complete,
+    Complete {
+        model_cursor: Option<crate::ModelCursor>,
+    },
     Cancelled,
     Failed(TurnFailure),
 }

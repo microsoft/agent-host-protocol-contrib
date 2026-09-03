@@ -3,6 +3,7 @@ import { useId } from "react"
 import {
   modelById,
   modelSelection,
+  modelSelectionWithThinking,
   reasoningConfig,
   type ModelSelectionView,
   type ModelView,
@@ -51,7 +52,9 @@ export function ModelPicker({
           onChange={(event) => onChange(event.target.value ? modelSelection(event.target.value) : undefined)}
           className="h-9 rounded-md border bg-background px-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {allowHostDefault && <option value="">Host default</option>}
+          {allowHostDefault
+            ? <option value="">Host default</option>
+            : <option value="" disabled>Choose a model</option>}
           {!selectedModel && selection && <option value={selection.id}>{selection.id} (unavailable)</option>}
           {models.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
         </select>
@@ -66,7 +69,7 @@ export function ModelPicker({
             title={reasoning.description}
             onChange={(event) => {
               const option = reasoning.options.find((candidate) => encoded(candidate.value) === event.target.value)
-              onChange(modelSelection(selection.id, option?.value))
+              onChange(modelSelectionWithThinking(selection, option?.value))
             }}
             className="h-9 rounded-md border bg-background px-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
           >

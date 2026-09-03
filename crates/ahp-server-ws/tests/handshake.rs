@@ -15,8 +15,8 @@ use ahp_server_ws::{router, WsOptions};
 struct NeverModel;
 
 impl AgentModel for NeverModel {
-    fn model_name(&self) -> &str {
-        "test"
+    fn default_model(&self) -> Option<&str> {
+        Some("test")
     }
 
     fn stream<'a>(&'a self, _: &'a ModelRequest) -> ModelRequestFuture<'a> {

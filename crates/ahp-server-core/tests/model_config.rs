@@ -17,6 +17,7 @@ use workspace_agent_tools::ConfiguredWorkspaces;
 
 struct RecordingModel {
     requests: Mutex<Vec<ModelRequest>>,
+    default_model: Option<String>,
 }
 
 type HostFixture = (CoreHost, Arc<MemoryHostStore>, Arc<RecordingModel>);
@@ -28,8 +29,8 @@ impl RecordingModel {
 }
 
 impl AgentModel for RecordingModel {
-    fn model_name(&self) -> &str {
-        "alpha"
+    fn default_model(&self) -> Option<&str> {
+        self.default_model.as_deref()
     }
 
     fn stream<'a>(&'a self, request: &'a ModelRequest) -> ModelRequestFuture<'a> {
@@ -52,10 +53,10 @@ fn catalog() -> ModelCatalog {
     beta.name = "Beta".into();
     ModelCatalog {
         models: vec![alpha, beta],
-        default_selection: ahp_types::state::ModelSelection {
+        default_selection: Some(ahp_types::state::ModelSelection {
             id: "alpha".into(),
             config: None,
-        },
+        }),
     }
 }
 
@@ -63,16 +64,49 @@ fn host() -> Result<HostFixture, Box<dyn std::error::Error>> {
     let store = Arc::new(MemoryHostStore::new());
     let model = Arc::new(RecordingModel {
         requests: Mutex::new(Vec::new()),
+        default_model: Some("alpha".into()),
     });
-    let profile = WorkspaceAgentProfile::new(ConfiguredWorkspaces::from_current_dir()?);
-    let host = CoreHost::with_model_catalog(
-        CoreConfig::default(),
-        catalog(),
-        store.clone(),
-        model.clone(),
-        Arc::new(profile),
-    )?;
+    let host = host_with_catalog(catalog(), store.clone(), model.clone())?;
     Ok((host, store, model))
+}
+
+fn no_default_catalog() -> ModelCatalog {
+    ModelCatalog::new([("alpha", "Alpha"), ("beta", "Beta")])
+}
+
+fn host_with_catalog(
+    model_catalog: ModelCatalog,
+    store: Arc<dyn HostStore>,
+    model: Arc<RecordingModel>,
+) -> Result<CoreHost, Box<dyn std::error::Error>> {
+    let profile = WorkspaceAgentProfile::new(ConfiguredWorkspaces::from_current_dir()?);
+    Ok(CoreHost::with_model_catalog(
+        CoreConfig::default(),
+        model_catalog,
+        store,
+        model,
+        Arc::new(profile),
+    )?)
+}
+
+#[test]
+fn convenience_constructor_requires_an_explicit_catalog_without_an_adapter_default(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let profile = WorkspaceAgentProfile::new(ConfiguredWorkspaces::from_current_dir()?);
+    let result = CoreHost::new(
+        CoreConfig::default(),
+        Arc::new(MemoryHostStore::new()),
+        Arc::new(RecordingModel {
+            requests: Mutex::new(Vec::new()),
+            default_model: None,
+        }),
+        Arc::new(profile),
+    );
+    assert!(matches!(
+        result,
+        Err(ahp_server_core::CoreHostError::ExplicitModelCatalogRequired)
+    ));
+    Ok(())
 }
 
 async fn next(peer: &mut ahp_server_core::CorePeer) -> Result<Value, Box<dyn std::error::Error>> {
@@ -229,5 +263,150 @@ async fn advertises_and_resolves_the_complete_catalog() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[tokio::test]
+async fn requires_a_selection_when_the_host_has_no_default_model(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(MemoryHostStore::new());
+    let model = Arc::new(RecordingModel {
+        requests: Mutex::new(Vec::new()),
+        default_model: None,
+    });
+    let host = host_with_catalog(no_default_catalog(), store, model.clone())?;
+    let mut peer = host.open_peer().await;
+    request(
+        &host,
+        &mut peer,
+        1,
+        "initialize",
+        json!({
+            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.8.0"],
+            "initialSubscriptions": ["ahp-root://"]
+        }),
+    )
+    .await?;
+
+    let resolved = request(
+        &host,
+        &mut peer,
+        2,
+        "resolveSessionConfig",
+        json!({ "channel": "ahp-root://", "provider": "openai" }),
+    )
+    .await?;
+    assert!(resolved.pointer("/result/values/model").is_none());
+    assert_eq!(
+        resolved.pointer("/result/schema/required"),
+        Some(&json!(["model"]))
+    );
+    assert!(resolved
+        .pointer("/result/schema/properties/model/default")
+        .is_none());
+
+    let partial = request(
+        &host,
+        &mut peer,
+        8,
+        "resolveSessionConfig",
+        json!({
+            "channel": "ahp-root://",
+            "config": { "model": { "id": "beta" } }
+        }),
+    )
+    .await?;
+    assert_eq!(
+        partial.pointer("/result/values/model/id"),
+        Some(&json!("beta"))
+    );
+
+    let unresolved_partial = request(
+        &host,
+        &mut peer,
+        9,
+        "resolveSessionConfig",
+        json!({
+            "channel": "ahp-root://",
+            "config": { "model": { "config": { "thinkingLevel": "medium" } } }
+        }),
+    )
+    .await?;
+    assert!(unresolved_partial.pointer("/result/values/model").is_none());
+    assert_eq!(
+        unresolved_partial.pointer("/result/schema/required"),
+        Some(&json!(["model"]))
+    );
+
+    let unconfigured = request(
+        &host,
+        &mut peer,
+        3,
+        "createSession",
+        json!({ "channel": "ahp-session:/missing-model" }),
+    )
+    .await?;
+    assert_eq!(unconfigured["result"], Value::Null);
+
+    let created = request(
+        &host,
+        &mut peer,
+        4,
+        "createSession",
+        json!({
+            "channel": "ahp-session:/selected-model",
+            "config": { "model": { "id": "beta" } }
+        }),
+    )
+    .await?;
+    assert_eq!(created["result"], Value::Null);
+    let session = request(
+        &host,
+        &mut peer,
+        5,
+        "subscribe",
+        json!({ "channel": "ahp-session:/selected-model" }),
+    )
+    .await?;
+    assert_eq!(
+        session.pointer("/result/snapshot/state/config/values/model/id"),
+        Some(&json!("beta"))
+    );
+    let chat = session["result"]["snapshot"]["state"]["defaultChat"]
+        .as_str()
+        .ok_or("missing default chat")?
+        .to_owned();
+    request(&host, &mut peer, 6, "subscribe", json!({ "channel": chat })).await?;
+    notify(
+        &host,
+        &peer,
+        &chat,
+        7,
+        json!({
+            "type": "chat/turnStarted", "turnId": "selected",
+            "startedAt": "2026-09-01T00:00:00.000Z",
+            "message": { "text": "selected", "origin": { "kind": "user" } }
+        }),
+    )
+    .await?;
+    wait_for_requests(&model, 1).await?;
+    assert_eq!(
+        model.requests()[0]
+            .model_selection
+            .as_ref()
+            .map(|selection| selection.id.as_str()),
+        Some("beta")
+    );
+    host.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[path = "model_config/draft.rs"]
+mod model_config_draft;
+#[path = "model_config/explicit_precedence.rs"]
+mod model_config_explicit_precedence;
+#[path = "model_config/history.rs"]
+mod model_config_history;
+#[path = "model_config/stability.rs"]
+mod model_config_stability;
+#[path = "model_config/stale.rs"]
+mod model_config_stale;
 #[path = "model_config/turns.rs"]
 mod model_config_turns;

@@ -1,14 +1,16 @@
 //! Atomic active-turn and tool-call transitions.
 
 use ahp_types::actions::{
-    ChatDeltaAction, ChatResponsePartAction, SessionChatUpdatedAction, StateAction,
+    ChatDeltaAction, ChatDraftChangedAction, ChatResponsePartAction, SessionChatUpdatedAction,
+    StateAction,
 };
-use ahp_types::state::{MarkdownResponsePart, ResponsePart, ToolCallState};
+use ahp_types::state::{MarkdownResponsePart, MessageKind, ResponsePart, ToolCallState};
 
 use super::state::{now, response_part_id};
 use super::{Draft, MemoryHostStore};
 use crate::store::{
-    CommittedTransition, StartedTurn, StoreConflict, StoreError, ToolCallTransition, TurnStart,
+    ChangeDraft, CommittedTransition, DraftTurnPrecondition, StartedTurn, StoreConflict,
+    StoreError, ToolCallTransition, TurnStart,
 };
 
 pub(super) fn start_turn(
@@ -16,6 +18,17 @@ pub(super) fn start_turn(
     request: TurnStart,
 ) -> Result<CommittedTransition<StartedTurn>, StoreError> {
     store.transact(move |data| {
+        let existing_chat = data.chat(&request.chat)?;
+        let draft_selection = existing_chat
+            .draft
+            .as_ref()
+            .and_then(|draft| draft.model.clone());
+        let history = existing_chat
+            .turns
+            .iter()
+            .map(super::state::StoredTurn::snapshot)
+            .collect();
+        let model_cursor = existing_chat.model_cursor.clone();
         let session = data.session_for_chat(&request.chat)?;
         let workspace = session.workspace.clone();
         let model_selection = request
@@ -23,7 +36,10 @@ pub(super) fn start_turn(
             .message
             .model
             .clone()
-            .unwrap_or_else(|| session.model_selection.clone());
+            .or(draft_selection)
+            .or(session.model_selection.clone())
+            .or(request.legacy_default_selection)
+            .ok_or_else(|| StoreConflict::MissingModelSelection(session.uri.clone()))?;
         let chat = data.chat_mut(&request.chat)?;
         if chat.active.is_some() {
             return Err(StoreConflict::ActiveTurn(request.chat).into());
@@ -35,10 +51,13 @@ pub(super) fn start_turn(
         let mut action = request.action;
         action.message.model = Some(model_selection.clone());
         chat.active = Some(super::state::Active::new(&action, part.clone()));
+        chat.draft = None;
         chat.modified_at = now();
         let value = StartedTurn {
             chat: request.chat.clone(),
             turn_id: action.turn_id.clone(),
+            history,
+            model_cursor,
             message: action.message.clone(),
             workspace,
             model_selection,
@@ -50,6 +69,11 @@ pub(super) fn start_turn(
                 Draft::action(
                     request.chat.clone(),
                     StateAction::ChatTurnStarted(action),
+                    request.origin.clone(),
+                ),
+                Draft::action(
+                    request.chat.clone(),
+                    StateAction::ChatDraftChanged(ChatDraftChangedAction { draft: None }),
                     request.origin,
                 ),
                 summary_draft(data, &request.chat, summary),
@@ -67,16 +91,91 @@ pub(super) fn start_turn(
     })
 }
 
+pub(super) fn change_draft(
+    store: &MemoryHostStore,
+    request: ChangeDraft,
+) -> Result<CommittedTransition<()>, StoreError> {
+    store.transact(move |data| {
+        if request
+            .draft
+            .as_ref()
+            .is_some_and(|draft| !matches!(draft.origin.kind, MessageKind::User))
+        {
+            return Err(StoreConflict::InvalidDraft(request.chat).into());
+        }
+        let chat = data.chat_mut(&request.chat)?;
+        if let DraftTurnPrecondition::Latest(expected) = &request.turn_precondition {
+            let actual = chat
+                .active
+                .as_ref()
+                .map(|turn| turn.id.clone())
+                .or_else(|| chat.turns.last().map(|turn| turn.id.clone()));
+            if expected != &actual {
+                return Err(StoreConflict::StaleDraft {
+                    chat: request.chat,
+                    expected: expected.clone(),
+                    actual,
+                }
+                .into());
+            }
+        }
+        chat.draft = request.draft.clone();
+        chat.modified_at = now();
+        Ok((
+            (),
+            vec![Draft::action(
+                request.chat,
+                StateAction::ChatDraftChanged(ChatDraftChangedAction {
+                    draft: request.draft,
+                }),
+                request.origin,
+            )],
+        ))
+    })
+}
+
+pub(super) fn append_response_part(
+    store: &MemoryHostStore,
+    chat: &str,
+    turn_id: &str,
+    part: ResponsePart,
+) -> Result<CommittedTransition<()>, StoreError> {
+    let (chat, turn_id) = (chat.to_owned(), turn_id.to_owned());
+    store.transact(move |data| {
+        data.active_mut(&chat, &turn_id)?
+            .response_parts
+            .push(part.clone());
+        data.chat_mut(&chat)?.modified_at = now();
+        Ok((
+            (),
+            vec![Draft::action(
+                chat,
+                StateAction::ChatResponsePart(ChatResponsePartAction {
+                    turn_id,
+                    part,
+                    meta: None,
+                }),
+                None,
+            )],
+        ))
+    })
+}
+
 pub(super) fn append_text(
     store: &MemoryHostStore,
     chat: &str,
     turn_id: &str,
+    part_id: &str,
     chunk: &str,
 ) -> Result<CommittedTransition<()>, StoreError> {
-    let (chat, turn_id, chunk) = (chat.to_owned(), turn_id.to_owned(), chunk.to_owned());
+    let (chat, turn_id, part_id, chunk) = (
+        chat.to_owned(),
+        turn_id.to_owned(),
+        part_id.to_owned(),
+        chunk.to_owned(),
+    );
     store.transact(move |data| {
         let active = data.active_mut(&chat, &turn_id)?;
-        let part_id = response_part_id(&turn_id);
         let Some(ResponsePart::Markdown(markdown)) = active.response_parts.iter_mut().find(
             |part| matches!(part, ResponsePart::Markdown(markdown) if markdown.id == part_id),
         ) else {

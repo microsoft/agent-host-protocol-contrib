@@ -23,6 +23,7 @@ pub struct SseDecoder {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ResponsesEvent {
+    Started(String),
     TextDelta(String),
     Completed,
     Failed(String),
@@ -32,6 +33,11 @@ pub enum ResponsesEvent {
 pub(crate) fn endpoint(base_url: &str) -> HostResult<Url> {
     let mut base = Url::parse(base_url)
         .map_err(|error| HostError(format!("--openai-base-url is not a URL: {error}")))?;
+    if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
+        return Err(HostError(
+            "--openai-base-url must be an http:// or https:// API origin".to_owned(),
+        ));
+    }
     if base.path() != "/" && !base.path().is_empty() {
         return Err(HostError(
             "--openai-base-url must be an API origin, without a path such as /v1".to_owned(),
@@ -43,27 +49,76 @@ pub(crate) fn endpoint(base_url: &str) -> HostResult<Url> {
         .map_err(|error| HostError(format!("could not build /v1/responses URL: {error}")))
 }
 
-pub(crate) async fn run_turn(state: AppState, turn_id: String, prompt: String) {
-    let outcome = stream_text(&state, &turn_id, &prompt).await;
-    let (state_name, error, action_type) = match outcome {
-        Ok(()) => ("complete", None, "chat/turnComplete"),
-        Err(error) => ("error", Some(error), "chat/error"),
+pub(crate) async fn run_turn(
+    state: AppState,
+    turn_id: String,
+    prompt: String,
+    history: Vec<FinishedTurn>,
+    previous_response_id: Option<String>,
+) {
+    let outcome = stream_text(
+        &state,
+        &turn_id,
+        &prompt,
+        &history,
+        previous_response_id.as_deref(),
+    )
+    .await;
+    let (state_name, error, action_type, response_id) = match outcome {
+        Ok(response_id) => ("complete", None, "chat/turnComplete", response_id),
+        Err(error) => ("error", Some(error), "chat/error", None),
     };
-    let _ = finish_turn(&state, &turn_id, state_name, error, action_type, None).await;
+    let _ = finish_turn(
+        &state,
+        &turn_id,
+        state_name,
+        error,
+        action_type,
+        None,
+        response_id,
+    )
+    .await;
 }
 
-async fn stream_text(state: &AppState, turn_id: &str, prompt: &str) -> Result<(), String> {
+async fn stream_text(
+    state: &AppState,
+    turn_id: &str,
+    prompt: &str,
+    history: &[FinishedTurn],
+    previous_response_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    let chained = state.config.response_chaining && previous_response_id.is_some();
+    let input = if chained {
+        vec![json!({ "role": "user", "content": prompt })]
+    } else {
+        model_input(history, prompt)
+    };
+    let mut body = json!({
+        "model": state.config.model,
+        "stream": true,
+        "input": input,
+    });
+    if state.config.response_chaining {
+        body.as_object_mut()
+            .ok_or_else(|| "Responses request body was not an object".to_owned())?
+            .insert("store".to_owned(), Value::Bool(true));
+    }
+    if chained {
+        body.as_object_mut()
+            .ok_or_else(|| "Responses request body was not an object".to_owned())?
+            .insert(
+                "previous_response_id".to_owned(),
+                json!(previous_response_id),
+            );
+    }
     let mut request = state
         .http
         .post(state.config.responses_url.clone())
-        .json(&json!({
-            "model": state.config.model,
-            "stream": true,
-            "input": [{ "role": "user", "content": prompt }],
-        }));
+        .json(&body);
     if let Some(api_key) = &state.config.api_key {
         request = request.bearer_auth(api_key);
     }
+
     let response = request.send().await.map_err(|error| error.to_string())?;
     if !response.status().is_success() {
         let status = response.status();
@@ -73,17 +128,45 @@ async fn stream_text(state: &AppState, turn_id: &str, prompt: &str) -> Result<()
 
     let mut decoder = SseDecoder::default();
     let mut body = response.bytes_stream();
+    let mut response_id = None;
     while let Some(chunk) = body.next().await {
         for event in decoder.push(&chunk.map_err(|error| error.to_string())?)? {
             match parse_responses_event(&event)? {
+                ResponsesEvent::Started(id) => {
+                    if response_id.replace(id).is_some() {
+                        return Err("Responses stream identified itself more than once".to_owned());
+                    }
+                }
                 ResponsesEvent::TextDelta(content) => append_delta(state, turn_id, content).await,
-                ResponsesEvent::Completed => return Ok(()),
+                ResponsesEvent::Completed => {
+                    if state.config.response_chaining && response_id.is_none() {
+                        return Err(
+                            "Responses stream omitted the response id required for chaining"
+                                .to_owned(),
+                        );
+                    }
+                    return Ok(response_id);
+                }
                 ResponsesEvent::Failed(message) => return Err(message),
                 ResponsesEvent::Ignored => {}
             }
         }
     }
     Err("Responses SSE stream ended before response.completed".to_owned())
+}
+
+fn model_input(history: &[FinishedTurn], prompt: &str) -> Vec<Value> {
+    let mut input = Vec::with_capacity(history.len().saturating_mul(2).saturating_add(1));
+    for turn in history {
+        if let Some(user) = turn.message.get("text").and_then(Value::as_str) {
+            input.push(json!({ "role": "user", "content": user }));
+        }
+        if !turn.response.is_empty() {
+            input.push(json!({ "role": "assistant", "content": turn.response }));
+        }
+    }
+    input.push(json!({ "role": "user", "content": prompt }));
+    input
 }
 
 async fn append_delta(state: &AppState, turn_id: &str, content: String) {
@@ -116,6 +199,7 @@ pub(crate) async fn finish_turn(
     error: Option<String>,
     action_type: &'static str,
     origin: Option<Value>,
+    response_id: Option<String>,
 ) -> Option<futures_util::future::AbortHandle> {
     let _publication = state.publication.lock().await;
     let (duration, abort) = {
@@ -143,6 +227,11 @@ pub(crate) async fn finish_turn(
         if shared.turns.len() > RETAINED_TURNS {
             shared.turns.remove(0);
         }
+        shared.response_id = if outcome == "complete" {
+            response_id
+        } else {
+            None
+        };
         (duration, active.abort)
     };
     let action = if let Some(error) = error {
@@ -212,6 +301,14 @@ pub fn parse_responses_event(event: &SseEvent) -> Result<ResponsesEvent, String>
         .or(event.event.as_deref())
         .ok_or_else(|| "Responses SSE event had no type".to_owned())?;
     match event_type {
+        "response.created" => match value.pointer("/response/id") {
+            Some(Value::String(id)) if !id.is_empty() => Ok(ResponsesEvent::Started(id.clone())),
+            Some(Value::String(_)) => {
+                Err("response.created contained an empty response id".to_owned())
+            }
+            Some(_) => Err("response.created response id was not a string".to_owned()),
+            None => Ok(ResponsesEvent::Ignored),
+        },
         "response.output_text.delta" => value
             .get("delta")
             .and_then(Value::as_str)
@@ -233,4 +330,33 @@ fn failure_message(value: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("Responses API reported a failed or incomplete response")
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{model_input, FinishedTurn};
+
+    #[test]
+    fn model_input_includes_retained_turns() {
+        let history = vec![FinishedTurn {
+            id: "first".into(),
+            started_at: "2026-09-02T00:00:00Z".into(),
+            duration: 1,
+            message: json!({ "text": "first question", "origin": { "kind": "user" } }),
+            response: "first answer".into(),
+            state: "complete",
+            error: None,
+        }];
+
+        assert_eq!(
+            model_input(&history, "second question"),
+            vec![
+                json!({ "role": "user", "content": "first question" }),
+                json!({ "role": "assistant", "content": "first answer" }),
+                json!({ "role": "user", "content": "second question" }),
+            ]
+        );
+    }
 }

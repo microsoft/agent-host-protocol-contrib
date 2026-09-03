@@ -38,8 +38,8 @@ impl FakeModel {
 }
 
 impl AgentModel for FakeModel {
-    fn model_name(&self) -> &str {
-        "fake-model"
+    fn default_model(&self) -> Option<&str> {
+        Some("fake-model")
     }
 
     fn stream<'a>(&'a self, _: &'a ModelRequest) -> ModelRequestFuture<'a> {

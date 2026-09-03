@@ -21,9 +21,9 @@ use std::sync::Mutex;
 use crate::db::backend;
 use crate::replay::{Draft, TransitionWork};
 use ahp_server_core::{
-    ActionReplay, CommittedTransition, CreateChat, CreateSession, CreatedSession, DisposedSession,
-    FinishTurn, HostStore, MarkSessionReady, SnapshotRequest, StartedTurn, StoreConflict,
-    StoreError, ToolCallTransition, TurnStart, UpdateSessionConfig,
+    ActionReplay, ChangeDraft, CommittedTransition, CreateChat, CreateSession, CreatedSession,
+    DisposedSession, FinishTurn, HostStore, MarkSessionReady, SnapshotRequest, StartedTurn,
+    StoreConflict, StoreError, ToolCallTransition, TurnStart, UpdateSessionConfig,
 };
 use ahp_types::actions::{ActionOrigin, StateAction};
 use ahp_types::common::{Uri, ROOT_RESOURCE_URI};
@@ -77,6 +77,14 @@ impl HostStore for RedbHostStore {
         self.summary_for(session)
     }
 
+    fn model_selection_for_chat(
+        &self,
+        chat: &str,
+        legacy_default_selection: Option<&ahp_types::state::ModelSelection>,
+    ) -> Result<ahp_types::state::ModelSelection, StoreError> {
+        self.model_selection_for_chat(chat, legacy_default_selection)
+    }
+
     fn create_session(
         &self,
         request: CreateSession,
@@ -96,6 +104,10 @@ impl HostStore for RedbHostStore {
         request: UpdateSessionConfig,
     ) -> Result<CommittedTransition<()>, StoreError> {
         self.update_session_config_transition(request)
+    }
+
+    fn change_draft(&self, request: ChangeDraft) -> Result<CommittedTransition<()>, StoreError> {
+        self.change_draft_transition(request)
     }
 
     fn create_chat(
@@ -119,13 +131,23 @@ impl HostStore for RedbHostStore {
         self.start_turn_transition(request)
     }
 
+    fn append_response_part(
+        &self,
+        chat: &str,
+        turn_id: &str,
+        part: ahp_types::state::ResponsePart,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.append_response_part_transition(chat, turn_id, part)
+    }
+
     fn append_text(
         &self,
         chat: &str,
         turn_id: &str,
+        part_id: &str,
         chunk: &str,
     ) -> Result<CommittedTransition<()>, StoreError> {
-        self.append_text_transition(chat, turn_id, chunk)
+        self.append_text_transition(chat, turn_id, part_id, chunk)
     }
 
     fn start_tool(

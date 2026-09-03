@@ -27,10 +27,19 @@ The redb crate only owns durable records, journal, recovery, and approvals.
 The model and workspace crates are independent helpers. This direction keeps
 the core usable with another transport or durable store.
 
+Starting a turn atomically returns the completed turns that preceded it. The
+core projects their user messages and ordered markdown response parts into the
+portable OpenAI request before appending the current workspace-qualified user
+message. Production OpenAI Responses mode also persists the last successful
+response ID per chat and normally sends only the new input with
+`previous_response_id`; the complete message list remains available for Chat
+Completions fallback. Because redb supplies both forms after restart, model
+context follows the durable AHP chat rather than the lifetime of a host process.
+
 Static files are intentionally absent from the reusable crates: serving the
 `ahp-chat` build is an advanced-host composition choice, not an AHP
 requirement. `/ahp` is registered before the SPA fallback. A missing
-`dist\index.html` produces setup guidance at `/` while the WebSocket host
+`dist/index.html` produces setup guidance at `/` while the WebSocket host
 continues to run.
 
 The `advanced-workspace-host --demo` command adds one more CLI-only

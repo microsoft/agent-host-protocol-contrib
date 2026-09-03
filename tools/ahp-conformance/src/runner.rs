@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use thiserror::Error;
+use url::Url;
 
 /// Output representation requested by the command-line runner.
 #[derive(Clone, Copy, Debug)]
@@ -51,6 +52,22 @@ pub enum ConformanceError {
     /// A local file operation failed.
     #[error("local data operation failed: {0}")]
     Io(#[from] std::io::Error),
+}
+
+pub(crate) fn redact_target(target: &str) -> String {
+    let Ok(mut url) = Url::parse(target) else {
+        return "<invalid WebSocket target>".to_owned();
+    };
+    if !url.username().is_empty() {
+        let _ = url.set_username("redacted");
+    }
+    if url.password().is_some() {
+        let _ = url.set_password(Some("redacted"));
+    }
+    if url.query().is_some() {
+        url.set_query(Some("redacted"));
+    }
+    url.to_string()
 }
 
 /// A complete machine-readable result.
@@ -124,6 +141,7 @@ enum CaseScope {
     LocalFixtureWorkspaceTools,
     LocalFixtureModelStreaming,
     LocalFixtureModelConfiguration,
+    LocalFixtureChatDrafts,
 }
 
 impl CaseScope {
@@ -135,6 +153,7 @@ impl CaseScope {
             Self::LocalFixtureWorkspaceTools => "local-fixture-workspace-tools",
             Self::LocalFixtureModelStreaming => "local-fixture-model-streaming",
             Self::LocalFixtureModelConfiguration => "local-fixture-model-configuration",
+            Self::LocalFixtureChatDrafts => "local-fixture-chat-drafts",
         }
     }
 }
@@ -177,6 +196,7 @@ pub async fn run_suite(options: RunOptions) -> Result<Report, ConformanceError> 
 /// or failure.
 mod advanced;
 mod basic;
+mod drafts;
 mod local_stack;
 mod model_config;
 mod probe;
@@ -191,7 +211,15 @@ use probe::Probe;
 
 #[cfg(test)]
 mod tests {
-    use super::{CaseResult, CaseScope, CaseStatus, OutputFormat, Report};
+    use super::{redact_target, CaseResult, CaseScope, CaseStatus, OutputFormat, Report};
+
+    #[test]
+    fn report_targets_redact_query_credentials() {
+        assert_eq!(
+            redact_target("ws://localhost:60460/?tkn=secret"),
+            "ws://localhost:60460/?redacted"
+        );
+    }
 
     fn report(format: OutputFormat) -> Report {
         Report {
@@ -251,5 +279,23 @@ mod tests {
         assert!(report
             .render()
             .contains("responses-streaming [local-fixture-model-streaming]"));
+    }
+
+    #[test]
+    fn reports_label_local_chat_draft_cases() {
+        let report = Report {
+            target: "ws://example.test/ahp".to_owned(),
+            model_checks: true,
+            cases: vec![CaseResult {
+                name: "chat-drafts",
+                status: CaseStatus::Passed,
+                scope: CaseScope::LocalFixtureChatDrafts,
+                detail: "works".to_owned(),
+            }],
+            format: OutputFormat::Text,
+        };
+        assert!(report
+            .render()
+            .contains("chat-drafts [local-fixture-chat-drafts]"));
     }
 }

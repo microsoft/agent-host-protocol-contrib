@@ -20,10 +20,8 @@ cargo run -p minimal-chat-host -- \
    --openai-base-url http://127.0.0.1:8899 \
   --openai-model fixture-model
 
-# Alternatively, use a real OpenAI model, or anything compatible:
-OPENAI_API_KEY=your-api-key cargo run -p minimal-chat-host -- \
-   --openai-base-url https://api.openai.com/v1 \
-   --openai-model gpt-5.6-luna
+# Alternatively, use production OpenAI with the sample defaults:
+OPENAI_API_KEY=your-api-key cargo run -p minimal-chat-host
 ```
 
 The fixture remains the deterministic option for tests and offline learning.
@@ -78,24 +76,35 @@ Run the advanced host with its internal deterministic model fixture:
 cargo run -p advanced-workspace-host -- --demo
 ```
 
+```bash
+cargo run -p advanced-workspace-host -- --demo
+```
+
 Open the printed `Chat UI` URL and click **Connect**. The command builds the
 browser app only when it is missing (or when `--rebuild-web` is supplied),
 starts a loopback deterministic fixture, and serves both the UI and `/ahp`.
 
-## Run the advanced sample with a configured model
+## Run the advanced sample with production OpenAI
 
 For a real OpenAI-compatible endpoint, build the optional browser UI yourself
-if needed, then supply the model. The default base URL is the production
-OpenAI origin and automatic API mode tries Responses first:
+if needed. The omitted base URL selects the production OpenAI origin, so an API
+key is required. The host discovers the model catalog and the user chooses a
+model in the Chat UI; automatic API mode tries Responses first:
 
 ```powershell
-Push-Location samples\web\ahp-chat
+Push-Location samples/web/ahp-chat
 npm ci
 npm run build
 Pop-Location
 
 $env:OPENAI_API_KEY = "your-api-key"
-cargo run -p advanced-workspace-host -- --openai-model gpt-5.6-luna
+cargo run -p advanced-workspace-host
+```
+
+```bash
+(cd samples/web/ahp-chat && npm ci && npm run build)
+
+OPENAI_API_KEY=your-api-key cargo run -p advanced-workspace-host
 ```
 
 The host prints its exact Chat UI and AHP URLs. Browser WebSocket upgrades are
@@ -104,15 +113,17 @@ A separate Vite origin must be explicitly allowed. Configuration, timeout,
 tool, and security details are in the
 [advanced host guide](samples/rust/advanced-workspace-host/README.md).
 Set `OPENAI_BASE_URL` or pass `--openai-base-url` to use another compatible
-endpoint; the explicit value overrides the production default.
+endpoint; the explicit value overrides the production default and does not
+require a key. `--openai-model` remains an optional host default or fallback
+for endpoints without a model catalog.
 
 ## Test tools and validation
 
 [`deterministic-openai`](tools/deterministic-openai/README.md) supplies stable
 v1 text/error and v2 sequential-tool contracts. The
 [`ahp-conformance`](tools/ahp-conformance/README.md) runner distinguishes
-protocol-core, text-chat, local fixture, workspace-tool, and model-streaming
-scopes.
+protocol-core, text-chat, local fixture, workspace-tool, model-streaming, and
+model-configuration scopes.
 
 Run Rust checks once from the repository root, then frontend and plugin checks:
 

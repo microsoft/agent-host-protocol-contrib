@@ -20,7 +20,7 @@ pub(super) async fn synchronization_replay(
     exact_output: bool,
 ) -> Result<String, ConformanceError> {
     let mut writer = Probe::connect(target, timeout_duration).await?;
-    let (_session, chat) = ready_chat(&mut writer, "sync").await?;
+    let (_session, chat, _) = ready_chat(&mut writer, "sync").await?;
     writer
         .request("subscribe", json!({ "channel": chat }))
         .await?;
@@ -103,20 +103,36 @@ pub(super) async fn errors(
         .initialize("errors-client", vec![SUPPORTED_PROTOCOL_VERSIONS[0]])
         .await?;
     let unknown = probe
-        .request("resourceRead", json!({ "channel": "ahp-root://" }))
+        .request(
+            "conformance/methodThatMustNotExist",
+            json!({ "channel": "ahp-root://" }),
+        )
         .await?;
     if unknown.pointer("/error/code").and_then(Value::as_i64) != Some(-32601) {
-        return Err(ConformanceError::Options(
-            "unsupported method did not produce Method not found".to_owned(),
-        ));
+        return Err(ConformanceError::Options(format!(
+            "unsupported method returned {}, expected Method not found (-32601)",
+            error_summary(&unknown)
+        )));
     }
-    let invalid = probe
-        .request("listSessions", json!({ "channel": "ahp-session:/wrong" }))
-        .await?;
+    let invalid = probe.request("subscribe", json!({})).await?;
     if invalid.pointer("/error/code").and_then(Value::as_i64) != Some(-32602) {
-        return Err(ConformanceError::Options(
-            "invalid parameters did not produce Invalid params".to_owned(),
-        ));
+        return Err(ConformanceError::Options(format!(
+            "invalid parameters returned {}, expected Invalid params (-32602)",
+            error_summary(&invalid)
+        )));
+    }
+
+    fn error_summary(reply: &Value) -> String {
+        let Some(error) = reply.get("error") else {
+            return "no error object".to_owned();
+        };
+        let code = error.get("code").map_or(Value::Null, Clone::clone);
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .and_then(|message| message.lines().next())
+            .unwrap_or("missing error message");
+        json!({ "code": code, "message": message }).to_string()
     }
     Ok("returns JSON-RPC parse, method-not-found, and invalid-params errors".to_owned())
 }
@@ -126,7 +142,7 @@ pub(super) async fn upstream_error(
     timeout_duration: Duration,
 ) -> Result<String, ConformanceError> {
     let mut probe = Probe::connect(target, timeout_duration).await?;
-    let (_session, chat) = ready_chat(&mut probe, "upstream-error").await?;
+    let (_session, chat, _) = ready_chat(&mut probe, "upstream-error").await?;
     probe
         .request("subscribe", json!({ "channel": chat }))
         .await?;
@@ -153,7 +169,7 @@ pub(super) async fn upstream_error(
 pub(super) async fn ready_chat(
     probe: &mut Probe,
     suffix: &str,
-) -> Result<(String, String), ConformanceError> {
+) -> Result<(String, String, bool), ConformanceError> {
     let initialized = probe
         .initialize(
             &format!("{suffix}-{}", Uuid::new_v4()),
@@ -161,18 +177,34 @@ pub(super) async fn ready_chat(
         )
         .await?;
     let initialized: InitializeResult = Probe::decode_result(&initialized, "initialize")?;
-    if !initialized.snapshots.iter().any(|snapshot| {
-        snapshot.resource == "ahp-root://" && matches!(snapshot.state, SnapshotState::Root(_))
-    }) {
-        return Err(ConformanceError::Options(
-            "initialize did not return a typed root snapshot".to_owned(),
-        ));
-    }
+    let (provider, multiple_chats) = initialized
+        .snapshots
+        .iter()
+        .find_map(|snapshot| match &snapshot.state {
+            SnapshotState::Root(root) if snapshot.resource == "ahp-root://" => {
+                root.agents.first().map(|agent| {
+                    (
+                        agent.provider.clone(),
+                        agent
+                            .capabilities
+                            .as_ref()
+                            .and_then(|capabilities| capabilities.multiple_chats.as_ref())
+                            .is_some(),
+                    )
+                })
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            ConformanceError::Options(
+                "initialize root snapshot did not advertise an agent provider".to_owned(),
+            )
+        })?;
     let session = format!("ahp-session:/{}", Uuid::new_v4());
     probe
         .request(
             "createSession",
-            json!({ "channel": session, "provider": "openai" }),
+            json!({ "channel": session, "provider": provider }),
         )
         .await?;
     let reply = probe
@@ -195,7 +227,7 @@ pub(super) async fn ready_chat(
     let chat = session_state
         .default_chat
         .ok_or_else(|| ConformanceError::Options("session has no default chat".to_owned()))?;
-    Ok((session, chat))
+    Ok((session, chat, multiple_chats))
 }
 
 pub(super) async fn start_turn(

@@ -8,9 +8,11 @@ use ahp_types::commands::{InitializeResult, SubscribeResult};
 use ahp_types::errors::ahp_error_codes;
 use ahp_types::state::SnapshotState;
 use ahp_types::SUPPORTED_PROTOCOL_VERSIONS;
+use base64::Engine;
 use serde_json::{json, Value};
+use tokio::time::{sleep, Instant};
 
-use super::advanced::ready_chat;
+use super::advanced::{ready_chat, start_turn};
 use super::{ConformanceError, Probe};
 
 pub(super) async fn negotiation(
@@ -76,25 +78,7 @@ pub(super) async fn sessions(
     timeout_duration: Duration,
 ) -> Result<String, ConformanceError> {
     let mut probe = Probe::connect(target, timeout_duration).await?;
-    let (session, chat) = ready_chat(&mut probe, "sessions").await?;
-    let listed = probe
-        .request(
-            "listSessions",
-            json!({ "channel": "ahp-root://", "limit": 1 }),
-        )
-        .await?;
-    let items = listed
-        .pointer("/result/items")
-        .and_then(Value::as_array)
-        .ok_or_else(|| ConformanceError::Options("listSessions omitted items".to_owned()))?;
-    if !items
-        .iter()
-        .any(|item| item.get("resource").and_then(Value::as_str) == Some(session.as_str()))
-    {
-        return Err(ConformanceError::Options(
-            "created session is not present in listSessions".to_owned(),
-        ));
-    }
+    let (session, chat, multiple_chats) = ready_chat(&mut probe, "sessions").await?;
     let reply = probe
         .request("subscribe", json!({ "channel": chat }))
         .await?;
@@ -107,32 +91,110 @@ pub(super) async fn sessions(
             "chat subscription returned the wrong typed snapshot".to_owned(),
         ));
     }
-    let second_chat = format!("ahp-chat:/{}", uuid::Uuid::new_v4());
-    let created = probe
-        .request(
-            "createChat",
-            json!({ "channel": session, "chat": second_chat }),
-        )
-        .await?;
-    if created.get("error").is_some() {
-        return Err(ConformanceError::Options(
-            "text-chat profile rejected createChat".to_owned(),
-        ));
-    }
-    let reply = probe
-        .request("subscribe", json!({ "channel": second_chat }))
-        .await?;
-    let subscribed: SubscribeResult = Probe::decode_result(&reply, "second chat subscribe")?;
-    let snapshot = subscribed.snapshot.ok_or_else(|| {
-        ConformanceError::Options("created chat subscription omitted a snapshot".to_owned())
-    })?;
-    if snapshot.resource != second_chat || !matches!(snapshot.state, SnapshotState::Chat(_)) {
-        return Err(ConformanceError::Options(
-            "created chat subscription returned the wrong typed snapshot".to_owned(),
-        ));
-    }
-    Ok(
-        "creates, lists, and subscribes to typed session/chat snapshots and a second chat"
-            .to_owned(),
+    start_turn(
+        &mut probe,
+        &chat,
+        "session-listing-turn",
+        "Reply with a short acknowledgement.".to_owned(),
     )
+    .await?;
+    let started = probe.wait_action(&chat, "chat/turnStarted").await?;
+    if started
+        .pointer("/params/rejectionReason")
+        .and_then(Value::as_str)
+        .is_some_and(|reason| !reason.is_empty())
+    {
+        return Err(ConformanceError::Options(
+            "session activation turn was rejected".to_owned(),
+        ));
+    }
+    await_listed_session(&mut probe, &session, timeout_duration).await?;
+
+    async fn await_listed_session(
+        probe: &mut Probe,
+        session: &str,
+        timeout_duration: Duration,
+    ) -> Result<(), ConformanceError> {
+        let deadline = Instant::now() + timeout_duration;
+        loop {
+            let listed = probe
+                .request(
+                    "listSessions",
+                    json!({ "channel": "ahp-root://", "limit": 100 }),
+                )
+                .await?;
+            let items = listed
+                .pointer("/result/items")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    ConformanceError::Options("listSessions omitted items".to_owned())
+                })?;
+            if items
+                .iter()
+                .any(|item| item.get("resource").and_then(Value::as_str) == Some(session))
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                let resources = items
+                    .iter()
+                    .filter_map(|item| item.get("resource").and_then(Value::as_str))
+                    .collect::<Vec<_>>();
+                return Err(ConformanceError::Options(format!(
+                    "created session {session:?} did not appear in listSessions; last returned {resources:?}"
+                )));
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+    if multiple_chats {
+        let canonical_session = decode_chat_session(&chat).unwrap_or_else(|| session.clone());
+        let second_chat = build_chat_uri(&canonical_session, &uuid::Uuid::new_v4().to_string());
+        let created = probe
+            .request(
+                "createChat",
+                json!({ "channel": session, "chat": second_chat }),
+            )
+            .await?;
+        if created.get("error").is_some() {
+            return Err(ConformanceError::Options(format!(
+                "agent advertised multipleChats but rejected createChat: {}",
+                created
+                    .get("error")
+                    .map_or_else(|| "no error object".to_owned(), Value::to_string)
+            )));
+        }
+
+        fn build_chat_uri(session: &str, chat_id: &str) -> String {
+            let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(session);
+            format!("ahp-chat://{chat_id}/{encoded}")
+        }
+
+        fn decode_chat_session(chat: &str) -> Option<String> {
+            let url = url::Url::parse(chat).ok()?;
+            let encoded = url.path().trim_start_matches('/');
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded)
+                .ok()?;
+            String::from_utf8(bytes).ok()
+        }
+        let reply = probe
+            .request("subscribe", json!({ "channel": second_chat }))
+            .await?;
+        let subscribed: SubscribeResult = Probe::decode_result(&reply, "second chat subscribe")?;
+        let snapshot = subscribed.snapshot.ok_or_else(|| {
+            ConformanceError::Options("created chat subscription omitted a snapshot".to_owned())
+        })?;
+        if snapshot.resource != second_chat || !matches!(snapshot.state, SnapshotState::Chat(_)) {
+            return Err(ConformanceError::Options(
+                "created chat subscription returned the wrong typed snapshot".to_owned(),
+            ));
+        }
+    }
+    Ok(if multiple_chats {
+        "creates, lists, and subscribes to typed session/chat snapshots and an advertised second chat"
+    } else {
+        "creates, activates, lists, and subscribes to typed session/chat snapshots; multiple chats were not advertised"
+    }
+    .to_owned())
 }

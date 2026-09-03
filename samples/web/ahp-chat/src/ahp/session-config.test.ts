@@ -1,31 +1,8 @@
-import {
-  ActionType,
-  MessageKind,
-  SessionLifecycle,
-  type ChatState,
-  type SessionState,
-  type URI,
-} from "@microsoft/agent-host-protocol"
 import { describe, expect, it, vi } from "vitest"
 
-import type { ConnectionCallbacks } from "./connection-events"
 import { AhpService, type AhpConnection } from "./service"
 
-const session = "ahp-session:/configured" as URI
-const chat = "ahp-chat:/configured" as URI
 const selectedModel = { id: "gpt-example", config: { thinkingLevel: "medium" } }
-
-function configuredSession(): SessionState {
-  return {
-    provider: "openai",
-    title: "Configured",
-    status: 1,
-    lifecycle: SessionLifecycle.Ready,
-    activeClients: [],
-    chats: [],
-    config: { schema: { type: "object", properties: {} }, values: { model: selectedModel } },
-  }
-}
 
 function connection(request = vi.fn(), dispatch = vi.fn()): AhpConnection {
   return {
@@ -68,62 +45,17 @@ describe("session model configuration", () => {
     })
   })
 
-  it("passes the resolved model config to createSession", async () => {
+  it("creates a session without pushing configuration into session scope", async () => {
     const request = vi.fn(async (method: string) => method === "listSessions" ? { items: [] } : undefined)
     const service = new AhpService(() => connection(request))
 
-    await service.createSession("C:\\work\\sample", { model: selectedModel })
+    await service.createSession("C:\\work\\sample")
 
     expect(request).toHaveBeenCalledWith("createSession", {
       channel: expect.stringMatching(/^ahp-session:\//),
       provider: "openai",
       workingDirectories: ["file:///C:/work/sample"],
-      config: { model: selectedModel },
     })
-  })
-
-  it("dispatches canonical config and turn actions and waits for the host echo", () => {
-    const dispatch = vi.fn()
-    let callbacks: ConnectionCallbacks | undefined
-    const service = new AhpService((next) => {
-      callbacks = next
-      return connection(vi.fn(), dispatch)
-    })
-    service.store.applySnapshot({ resource: session, state: configuredSession(), fromSeq: 1 })
-    service.store.applySnapshot({
-      resource: chat,
-      state: { resource: chat, title: "Chat", status: 1, modifiedAt: "", turns: [] } satisfies ChatState,
-      fromSeq: 2,
-    })
-    service.store.setSelection(session, chat)
-
-    expect(service.changeSessionModel({ id: "gpt-example", config: { thinkingLevel: "high" } })).toBe(true)
-    expect(dispatch).toHaveBeenLastCalledWith(session, {
-      type: ActionType.SessionConfigChanged,
-      config: { model: { id: "gpt-example", config: { thinkingLevel: "high" } } },
-    })
-    expect(service.getSnapshot().pendingSessionConfig).toBe(session)
-
-    service.sendPrompt("Explain this")
-    expect(dispatch).toHaveBeenLastCalledWith(chat, {
-      type: ActionType.ChatTurnStarted,
-      turnId: expect.any(String),
-      startedAt: expect.any(String),
-      message: { text: "Explain this", origin: { kind: MessageKind.User }, model: selectedModel },
-    })
-
-    callbacks?.onEvent({
-      type: "action",
-      params: {
-        channel: session,
-        serverSeq: 3,
-        origin: undefined,
-        action: { type: ActionType.SessionConfigChanged, config: { model: selectedModel } },
-        rejectionReason: "Model is unavailable",
-      },
-    })
-    expect(service.getSnapshot().pendingSessionConfig).toBeUndefined()
-    expect(service.getSnapshot().notice).toContain("Model is unavailable")
   })
 
   it("drops an old-host config response after a connection switch", async () => {

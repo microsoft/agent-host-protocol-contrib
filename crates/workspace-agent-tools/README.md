@@ -14,14 +14,15 @@ workspace must be a canonical `file:` URI for an existing directory beneath one 
 those roots. `replace_string` accepts only a non-empty relative path, resolves it
 canonically, rejects escapes (including symlink escapes), requires a regular UTF-8
 file of at most 1 MiB, and replaces exactly one occurrence through a same-directory
-temporary file and rename.
+temporary file before replacing the target.
 
 `run_shell` uses the selected workspace only as its current working directory. **It
 is not an OS sandbox**: a command can read or write paths outside that directory and
 may access the network. It has no stdin, bounds combined stdout/stderr capture to
 64 KiB, and uses `command-group` process groups (Unix) or Job Objects (Windows) so
 timeouts, cancellation, shutdown, and dropped execution futures terminate the whole
-process tree.
+process tree. Unix runs use `/bin/sh -c`; Windows uses `ComSpec` (falling back to
+`cmd.exe`).
 
 Approvals are deliberately not stored here. `PreparedShell::approval_key()` is an
 `ExactCommandApproval` containing the exact trimmed command. Hosts must persist and

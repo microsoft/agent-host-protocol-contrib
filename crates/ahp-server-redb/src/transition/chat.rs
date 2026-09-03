@@ -1,7 +1,7 @@
 //! Active-turn creation and text delta transitions.
 
 use ahp_server_core::{CommittedTransition, StartedTurn, StoreConflict, StoreError, TurnStart};
-use ahp_types::actions::{ChatDeltaAction, ChatResponsePartAction, StateAction};
+use ahp_types::actions::{ChatDraftChangedAction, ChatResponsePartAction, StateAction};
 use ahp_types::state::{MarkdownResponsePart, ResponsePart};
 
 use crate::replay::{Draft, TransitionWork};
@@ -9,7 +9,7 @@ use crate::sessions::{load_session, write_chat};
 use crate::types::{now_millis, now_rfc3339, response_part_id, ActiveRecord};
 use crate::RedbHostStore;
 
-use super::{active_mut, owned_chat, summary_draft};
+use super::{owned_chat, summary_draft};
 
 impl RedbHostStore {
     pub(crate) fn start_turn_transition(
@@ -28,8 +28,12 @@ impl RedbHostStore {
                 .message
                 .model
                 .clone()
+                .or_else(|| chat.draft.as_ref().and_then(|draft| draft.model.clone()))
                 .or(session.model_selection.clone())
-                .unwrap_or_else(|| request.legacy_default_selection.clone());
+                .or(request.legacy_default_selection)
+                .ok_or_else(|| StoreConflict::MissingModelSelection(session.uri.clone()))?;
+            let history = chat.turns.iter().map(crate::types::turn).collect();
+            let model_cursor = chat.model_cursor.clone();
             let part = ResponsePart::Markdown(MarkdownResponsePart {
                 id: response_part_id(&request.action.turn_id),
                 content: String::new(),
@@ -44,11 +48,14 @@ impl RedbHostStore {
                 response: String::new(),
                 response_parts: vec![part.clone()],
             });
+            chat.draft = None;
             chat.modified_at = now_rfc3339();
             write_chat(write, &chat)?;
             let value = StartedTurn {
                 chat: request.chat.clone(),
                 turn_id: action.turn_id.clone(),
+                history,
+                model_cursor,
                 message: action.message.clone(),
                 workspace: session
                     .working_directories
@@ -63,6 +70,11 @@ impl RedbHostStore {
                     Draft::action(
                         request.chat,
                         StateAction::ChatTurnStarted(action),
+                        request.origin.clone(),
+                    ),
+                    Draft::action(
+                        chat.uri.clone(),
+                        StateAction::ChatDraftChanged(ChatDraftChangedAction { draft: None }),
                         request.origin,
                     ),
                     summary_draft(&chat),
@@ -76,51 +88,6 @@ impl RedbHostStore {
                         None,
                     ),
                 ],
-            ))
-        })
-    }
-
-    pub(crate) fn append_text_transition(
-        &self,
-        chat_uri: &str,
-        turn_id: &str,
-        chunk: &str,
-    ) -> Result<CommittedTransition<()>, StoreError> {
-        if chunk.is_empty() {
-            return Err(StoreError::Backend("text deltas must not be empty".into()));
-        }
-        let (chat_uri, turn_id, chunk) =
-            (chat_uri.to_owned(), turn_id.to_owned(), chunk.to_owned());
-        self.commit_transition(move |write| {
-            let mut chat = owned_chat(write, &chat_uri)?;
-            let active = active_mut(&mut chat, &turn_id)?;
-            let part_id = response_part_id(&turn_id);
-            let markdown = active
-                .response_parts
-                .iter_mut()
-                .find_map(|part| match part {
-                    ResponsePart::Markdown(markdown) if markdown.id == part_id => Some(markdown),
-                    _ => None,
-                });
-            let markdown = markdown.ok_or_else(|| {
-                StoreError::Backend("active turn lacks its markdown response part".into())
-            })?;
-            markdown.content.push_str(&chunk);
-            active.response.push_str(&chunk);
-            chat.modified_at = now_rfc3339();
-            write_chat(write, &chat)?;
-            Ok(TransitionWork::new(
-                (),
-                vec![Draft::action(
-                    chat_uri,
-                    StateAction::ChatDelta(ChatDeltaAction {
-                        turn_id,
-                        part_id,
-                        content: chunk,
-                        meta: None,
-                    }),
-                    None,
-                )],
             ))
         })
     }

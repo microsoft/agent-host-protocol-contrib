@@ -57,7 +57,7 @@ pub(super) async fn run_suite_at(
         ));
     }
     Ok(Report {
-        target,
+        target: redact_target(&target),
         model_checks: options.model_checks,
         cases,
         format: options.format,
@@ -98,6 +98,11 @@ pub(super) fn validate_selected_cases(
         "session-model-change",
         "message-model-override",
         "session-model-restart",
+        "chat-drafts",
+        "draft-send-lifecycle",
+        "response-part-ordering",
+        "draft-model-only",
+        "conversation-history",
     ];
 
     for name in selected {
@@ -166,5 +171,10 @@ mod tests {
         assert!(validate_selected_cases(&["api-auto-selection".to_owned()], true).is_ok());
         assert!(validate_selected_cases(&["model-catalog".to_owned()], false).is_err());
         assert!(validate_selected_cases(&["session-model-restart".to_owned()], true).is_ok());
+        assert!(validate_selected_cases(&["chat-drafts".to_owned()], false).is_err());
+        assert!(validate_selected_cases(&["draft-send-lifecycle".to_owned()], true).is_ok());
+        assert!(validate_selected_cases(&["response-part-ordering".to_owned()], true).is_ok());
+        assert!(validate_selected_cases(&["draft-model-only".to_owned()], true).is_ok());
+        assert!(validate_selected_cases(&["conversation-history".to_owned()], true).is_ok());
     }
 }

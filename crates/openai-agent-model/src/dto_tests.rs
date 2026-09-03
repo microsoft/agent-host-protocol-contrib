@@ -32,9 +32,11 @@ fn serializes_exact_chat_and_stateless_responses_function_requests() -> Result<(
             json!({"type": "object"}),
         )],
         model_selection: None,
+        response_continuation: None,
+        store_response: false,
     };
     assert_eq!(
-        request_json(ModelApi::ChatCompletions, "model", &request)?,
+        request_json(ModelApi::ChatCompletions, Some("model"), &request)?,
         json!({
             "model": "model",
             "messages": [
@@ -53,7 +55,7 @@ fn serializes_exact_chat_and_stateless_responses_function_requests() -> Result<(
         })
     );
     assert_eq!(
-        request_json(ModelApi::Responses, "model", &request)?,
+        request_json(ModelApi::Responses, Some("model"), &request)?,
         json!({
             "model": "model",
             "input": [
@@ -70,16 +72,56 @@ fn serializes_exact_chat_and_stateless_responses_function_requests() -> Result<(
 }
 
 #[test]
+fn responses_continuation_sends_only_new_items_while_chat_fallback_keeps_history(
+) -> Result<(), ModelError> {
+    let request = ModelRequest {
+        messages: vec![
+            ModelMessage::User {
+                content: "previous user".into(),
+            },
+            ModelMessage::Assistant {
+                content: Some("previous assistant".into()),
+                tool_calls: Vec::new(),
+            },
+            ModelMessage::User {
+                content: "current user".into(),
+            },
+        ],
+        tools: Vec::new(),
+        model_selection: None,
+        response_continuation: None,
+        store_response: true,
+    }
+    .with_response_continuation("resp_previous", 2);
+
+    let responses = request_json(ModelApi::Responses, Some("model"), &request)?;
+    assert_eq!(
+        responses["input"],
+        json!([{ "role": "user", "content": "current user" }])
+    );
+    assert_eq!(responses["previous_response_id"], json!("resp_previous"));
+    assert_eq!(responses["store"], json!(true));
+    let chat = request_json(ModelApi::ChatCompletions, Some("model"), &request)?;
+    assert_eq!(chat["messages"].as_array().map(Vec::len), Some(3));
+    assert!(chat.get("previous_response_id").is_none());
+    Ok(())
+}
+
+#[test]
 fn serializes_selected_model_and_reasoning_effort_for_each_api() -> Result<(), ModelError> {
     let request = ModelRequest::text("hello").with_model_selection(
         ModelSelection::new("selected-model").with_reasoning_effort(ReasoningEffort::Medium),
     );
-    let chat = request_json(ModelApi::ChatCompletions, "configured-model", &request)?;
+    let chat = request_json(
+        ModelApi::ChatCompletions,
+        Some("configured-model"),
+        &request,
+    )?;
     assert_eq!(chat["model"], "selected-model");
     assert_eq!(chat["reasoning_effort"], "medium");
     assert!(chat.get("reasoning").is_none());
 
-    let responses = request_json(ModelApi::Responses, "configured-model", &request)?;
+    let responses = request_json(ModelApi::Responses, Some("configured-model"), &request)?;
     assert_eq!(responses["model"], "selected-model");
     assert_eq!(
         responses.pointer("/reasoning/effort"),
@@ -93,7 +135,7 @@ fn serializes_selected_model_and_reasoning_effort_for_each_api() -> Result<(), M
 fn omits_reasoning_and_uses_configured_model_without_a_selection() -> Result<(), ModelError> {
     let request = ModelRequest::text("hello");
     for api in [ModelApi::Responses, ModelApi::ChatCompletions] {
-        let value = request_json(api, "configured-model", &request)?;
+        let value = request_json(api, Some("configured-model"), &request)?;
         assert_eq!(value["model"], "configured-model");
         assert!(value.get("reasoning").is_none());
         assert!(value.get("reasoning_effort").is_none());
@@ -102,7 +144,7 @@ fn omits_reasoning_and_uses_configured_model_without_a_selection() -> Result<(),
     let selected =
         ModelRequest::text("hello").with_model_selection(ModelSelection::new("selected"));
     for api in [ModelApi::Responses, ModelApi::ChatCompletions] {
-        let value = request_json(api, "configured-model", &selected)?;
+        let value = request_json(api, Some("configured-model"), &selected)?;
         assert_eq!(value["model"], "selected");
         assert!(value.get("reasoning").is_none());
         assert!(value.get("reasoning_effort").is_none());
@@ -114,7 +156,15 @@ fn omits_reasoning_and_uses_configured_model_without_a_selection() -> Result<(),
 fn rejects_an_empty_selected_model_before_serialization() {
     let request = ModelRequest::text("hello").with_model_selection(ModelSelection::new("  "));
     assert!(matches!(
-        request_json(ModelApi::Responses, "configured-model", &request),
+        request_json(ModelApi::Responses, Some("configured-model"), &request),
         Err(ModelError::InvalidModelSelection { .. })
+    ));
+}
+
+#[test]
+fn rejects_an_unselected_model_when_no_default_is_configured() {
+    assert!(matches!(
+        request_json(ModelApi::Responses, None, &ModelRequest::text("hello")),
+        Err(ModelError::MissingModel)
     ));
 }

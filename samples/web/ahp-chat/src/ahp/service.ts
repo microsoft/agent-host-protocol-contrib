@@ -1,26 +1,24 @@
-import {
-  ActionType,
-  MessageKind,
-  type URI,
-} from "@microsoft/agent-host-protocol"
+import { ActionType, type URI } from "@microsoft/agent-host-protocol"
 import type { AhpClient } from "@microsoft/agent-host-protocol/client"
-
 import { ConnectionManager } from "./connection-manager"
 import type { ConnectionCallbacks } from "./connection-events"
 import { SessionConfigRequests } from "./config-requests"
-import { modelSelectionFromConfig, toModelSelection, type ModelSelectionView } from "./model-config"
+import { isAvailableModelSelection, modelSelectionFromConfig } from "./model-config"
+import { draftMessage, type DraftView } from "./drafts"
 import { displayError } from "./errors"
-import { persistentClientId, resourceUri, turnId } from "./ids"
+import { resourceUri, tabClientId, turnId } from "./ids"
 import { ConnectionEpoch } from "./lifecycle"
+import { latestTurnId } from "./projection"
 import { AhpStore, type AppSnapshot } from "./store"
 import { saveLastSuccessfulUrl, validateWebSocketUrl } from "./runtime-config"
 import { ToolConfirmations, type ToolConfirmation } from "./tool-confirmations"
 import { saveLastWorkspaceInput, workspaceInputToFileUri } from "./workspace"
-
+import { TabIdentity, type TabIdentityProvider } from "./tab-identity"
 export type { ToolConfirmation } from "./tool-confirmations"
-
 export interface AhpConnection {
   readonly activeClient?: Pick<AhpClient, "dispatch" | "request">
+  readonly connectionGeneration?: number
+  setClientId?(clientId: string): void
   connect(address: string): Promise<boolean>
   disconnect(): Promise<void>
   refresh(uri: URI): Promise<void>
@@ -28,35 +26,31 @@ export interface AhpConnection {
   setLastSeenServerSeq(sequence: number): void
   subscribe(uri: URI): Promise<void>
 }
-
 export type AhpConnectionFactory = (callbacks: ConnectionCallbacks) => AhpConnection
-
 export class AhpService {
   readonly store = new AhpStore()
   private readonly selectionEpoch = new ConnectionEpoch()
+  private readonly connectionEpoch = new ConnectionEpoch()
   private readonly connection: AhpConnection
+  private readonly identity: TabIdentityProvider
   private readonly configRequests = new SessionConfigRequests(() => this.connection.activeClient, this.store)
   private readonly toolConfirmations = new ToolConfirmations()
-
-  constructor(connectionFactory: AhpConnectionFactory = (callbacks) => new ConnectionManager(persistentClientId(), callbacks)) {
-    this.connection = connectionFactory({
+  constructor(connectionFactory?: AhpConnectionFactory, clientId = tabClientId(), identity: TabIdentityProvider = new TabIdentity()) {
+    this.identity = identity
+    const factory = connectionFactory ?? ((callbacks) => new ConnectionManager(clientId, callbacks))
+    this.connection = factory({
       onConnection: (connection) => this.store.setConnection(connection),
-      onSnapshot: (snapshot) => {
-        this.store.applySnapshot(snapshot)
-        if (snapshot.resource === this.store.getSnapshot().pendingSessionConfig) this.store.setPendingSessionConfig()
-        this.toolConfirmations.prune(this.store)
-      },
-      onEvent: (event) => {
+      onSnapshot: (snapshot) => { this.store.applySnapshot(snapshot); this.toolConfirmations.prune(this.store) },
+      onEvent: (event, connectionGeneration) => {
+        if (!this.isCurrentConnection(connectionGeneration)) return
         this.store.applyEvent(event)
-        this.settleSessionConfigChange(event)
         this.toolConfirmations.prune(this.store)
         this.connection.setLastSeenServerSeq(this.store.lastSeenServerSeq)
       },
       onReconnected: () => void this.refreshSessions(),
     })
   }
-  getSnapshot = (): AppSnapshot => this.store.getSnapshot()
-  subscribe = (listener: () => void): (() => void) => this.store.subscribe(listener)
+  getSnapshot = (): AppSnapshot => this.store.getSnapshot(); subscribe = (listener: () => void): (() => void) => this.store.subscribe(listener)
   async connect(input: string): Promise<void> {
     let address: string
     try {
@@ -65,21 +59,25 @@ export class AhpService {
       this.store.setConnection({ phase: "error", error: displayError(error) })
       return
     }
-    this.selectionEpoch.invalidate()
-    this.configRequests.invalidate()
+    const token = this.connectionEpoch.begin()
+    this.selectionEpoch.invalidate(); this.configRequests.invalidate()
     this.store.reset()
+    this.store.setConnection({ phase: "connecting", address })
+    const clientId = await this.identity.uniqueTabClientId()
+    if (!this.connectionEpoch.isCurrent(token)) return
+    this.connection.setClientId?.(clientId)
     const connected = await this.connection.connect(address)
-    if (!connected) return
+    if (!connected || !this.connectionEpoch.isCurrent(token)) return
     saveLastSuccessfulUrl(address)
     this.connection.setLastSeenServerSeq(this.store.lastSeenServerSeq)
     await this.refreshSessions()
   }
   async disconnect(): Promise<void> {
-    this.selectionEpoch.invalidate()
-    this.configRequests.invalidate()
+    this.connectionEpoch.invalidate(); this.selectionEpoch.invalidate(); this.configRequests.invalidate()
     await this.connection.disconnect()
     this.store.reset()
   }
+  async dispose(): Promise<void> { this.identity.dispose(); await this.disconnect() }
   async refreshSessions(): Promise<void> {
     const client = this.connection.activeClient
     if (!client) return
@@ -101,7 +99,7 @@ export class AhpService {
   }
   resolveSessionConfig = this.configRequests.resolve.bind(this.configRequests)
   sessionConfigCompletions = this.configRequests.completions.bind(this.configRequests)
-  async createSession(workspaceInput = "", config?: Record<string, unknown>): Promise<boolean> {
+  async createSession(workspaceInput = ""): Promise<boolean> {
     const token = this.selectionEpoch.begin()
     try {
       const session = resourceUri("session")
@@ -110,7 +108,6 @@ export class AhpService {
         channel: session,
         provider: "openai",
         ...(workingDirectories ? { workingDirectories } : {}),
-        ...(config && Object.keys(config).length ? { config } : {}),
       })
       if (!this.isCurrentSelection(token)) return false
       saveLastWorkspaceInput(workspaceInput)
@@ -163,16 +160,16 @@ export class AhpService {
       if (this.isCurrentSelection(token)) this.store.setNotice(displayError(error))
     }
   }
-  changeSessionModel(selection: ModelSelectionView): boolean {
+  updateDraft(draft: DraftView | undefined, expectedTurnId: string | undefined): boolean {
     const snapshot = this.store.getSnapshot()
-    const session = snapshot.selectedSession
-    if (!session || snapshot.selectedChat?.activeTurn || snapshot.pendingSessionConfig) return false
+    const chat = snapshot.selectedChat
+    if (!chat || chat.activeTurn || latestTurnId(chat) !== expectedTurnId) return false
     try {
-      this.requireClient().dispatch(session.resource, {
-        type: ActionType.SessionConfigChanged,
-        config: { model: toModelSelection(selection) },
+      const message = draft && draftMessage(draft, expectedTurnId ?? null)
+      this.requireClient().dispatch(chat.resource, {
+        type: ActionType.ChatDraftChanged,
+        ...(message ? { draft: message } : {}),
       })
-      this.store.setPendingSessionConfig(session.resource)
       this.store.setNotice(undefined)
       return true
     } catch (error) {
@@ -180,25 +177,28 @@ export class AhpService {
       return false
     }
   }
-  sendPrompt(text: string): void {
+  sendPrompt(draft: DraftView): boolean {
     const snapshot = this.store.getSnapshot()
     const chat = snapshot.selectedChat
-    if (!chat || chat.activeTurn || !text.trim()) return
-    const model = modelSelectionFromConfig(snapshot.selectedSession?.config?.values)
+    const message = draftMessage(draft)
+    const model = draft.model ?? modelSelectionFromConfig(snapshot.selectedSession?.config?.values)
+    if (!chat || chat.activeTurn || !message?.text.trim()) return false
+    if (snapshot.models.length && !isAvailableModelSelection(snapshot.models, model)) {
+      this.store.setNotice("Choose a model to continue.")
+      return false
+    }
     try {
       this.requireClient().dispatch(chat.resource, {
         type: ActionType.ChatTurnStarted,
         turnId: turnId(),
         startedAt: new Date().toISOString(),
-        message: {
-          text: text.trim(),
-          origin: { kind: MessageKind.User },
-          ...(model ? { model: toModelSelection(model) } : {}),
-        },
+        message: { ...message, text: message.text.trim() },
       })
       this.store.setNotice(undefined)
+      return true
     } catch (error) {
       this.store.setNotice(displayError(error))
+      return false
     }
   }
   cancelActiveTurn(): void {
@@ -228,11 +228,7 @@ export class AhpService {
   private isCurrentSelection(token: number): boolean {
     return this.selectionEpoch.isCurrent(token)
   }
-  private settleSessionConfigChange(event: Parameters<ConnectionCallbacks["onEvent"]>[0]): void {
-    const pending = this.store.getSnapshot().pendingSessionConfig
-    if (event.type !== "action" || event.params.channel !== pending) return
-    if (event.params.rejectionReason || event.params.action.type === ActionType.SessionConfigChanged) {
-      this.store.setPendingSessionConfig()
-    }
+  private isCurrentConnection(connectionGeneration?: number): boolean {
+    return connectionGeneration === this.connection.connectionGeneration
   }
 }

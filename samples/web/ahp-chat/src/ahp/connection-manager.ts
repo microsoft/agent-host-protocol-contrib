@@ -24,7 +24,9 @@ export class ConnectionManager {
   private reconnecting = false
   private lastSeenServerSeq = 0
   private activeToken = 0
-  private readonly clientId: string
+  private nextClientGeneration = 0
+  private activeClientGeneration = 0
+  private clientId: string
   private readonly callbacks: ConnectionCallbacks
   private readonly openTransport: TransportOpener
 
@@ -40,6 +42,14 @@ export class ConnectionManager {
 
   get activeClient(): AhpClient | undefined {
     return this.client
+  }
+
+  get connectionGeneration(): number {
+    return this.activeClientGeneration
+  }
+
+  setClientId(clientId: string): void {
+    this.clientId = clientId
   }
 
   setLastSeenServerSeq(sequence: number): void {
@@ -114,6 +124,7 @@ export class ConnectionManager {
     }
     const client = new AhpClient(transport)
     this.client = client
+    this.activeClientGeneration = ++this.nextClientGeneration
     this.observeClient(client, token)
     client.connect()
     this.subscriptions.attachAll(this.subscriptionContext(client))
@@ -154,7 +165,7 @@ export class ConnectionManager {
       })
       if (!this.current(token, client)) return
       if ("actions" in result) {
-        for (const action of result.actions) this.callbacks.onEvent({ type: "action", params: action })
+        for (const action of result.actions) this.callbacks.onEvent({ type: "action", params: action }, this.activeClientGeneration)
         this.subscriptions.removeMissing(result.missing)
       } else {
         for (const snapshot of result.snapshots) this.receiveSnapshot(snapshot)
@@ -184,23 +195,25 @@ export class ConnectionManager {
 
   private subscriptionContext(client: AhpClient) {
     const token = this.activeToken
+    const connectionGeneration = this.activeClientGeneration
     return {
       client,
       token,
       isCurrent: () => this.current(token, client),
       onSnapshot: (snapshot: Snapshot) => this.receiveSnapshot(snapshot),
-      onSubscription: (subscription: Subscription, subscriptionToken: number) => this.consume(subscription, subscriptionToken),
+      onSubscription: (subscription: Subscription, subscriptionToken: number) =>
+        this.consume(subscription, subscriptionToken, client, connectionGeneration),
       onUnsubscribeError: (error: unknown) => {
         this.callbacks.onConnection({ phase: "reconnecting", address: this.address, error: displayError(error) })
       },
     }
   }
 
-  private consume(subscription: Subscription, token: number): void {
+  private consume(subscription: Subscription, token: number, client: AhpClient, connectionGeneration: number): void {
     consumeSubscription(
       subscription,
-      () => this.current(token) && !this.intentionallyStopped,
-      (event) => this.callbacks.onEvent(event),
+      () => this.current(token, client) && !this.intentionallyStopped,
+      (event) => this.callbacks.onEvent(event, connectionGeneration),
       (error) => this.callbacks.onConnection({ phase: "reconnecting", address: this.address, error: displayError(error) }),
     )
   }

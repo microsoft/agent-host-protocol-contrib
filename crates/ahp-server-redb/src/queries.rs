@@ -58,6 +58,27 @@ impl RedbHostStore {
             .ok_or_else(|| StoreConflict::UnknownChannel(session_uri.into()))?;
         session_summary(&read, &session)
     }
+
+    pub(crate) fn model_selection_for_chat(
+        &self,
+        chat_uri: &str,
+        legacy_default_selection: Option<&ahp_types::state::ModelSelection>,
+    ) -> Result<ahp_types::state::ModelSelection, StoreError> {
+        let database = self.database()?;
+        let read = database.get()?.begin_read().map_err(backend)?;
+        let chat = read_record::<PersistedChat>(&read, crate::tables::CHATS, chat_uri)?
+            .ok_or_else(|| StoreConflict::UnknownChannel(chat_uri.into()))?;
+        let session =
+            read_record::<PersistedSession>(&read, crate::tables::SESSIONS, &chat.session_uri)?
+                .filter(|session| session.chats.contains(&chat.uri))
+                .ok_or_else(|| StoreConflict::UnknownChannel(chat_uri.into()))?;
+        chat.draft
+            .as_ref()
+            .and_then(|draft| draft.model.clone())
+            .or(session.model_selection.clone())
+            .or_else(|| legacy_default_selection.cloned())
+            .ok_or_else(|| StoreConflict::MissingModelSelection(session.uri).into())
+    }
 }
 
 fn root_snapshot(
@@ -98,10 +119,14 @@ fn session_snapshot(
 ) -> Result<Snapshot, StoreError> {
     let summary = session_summary(read, &session)?;
     let chats = chat_summaries(read, &session.chats)?;
-    let model_selection = session
+    let config = session
         .model_selection
-        .clone()
-        .unwrap_or_else(|| request.model_catalog.default_selection.clone());
+        .as_ref()
+        .or(request.model_catalog.default_selection.as_ref())
+        .map_or_else(
+            || request.model_catalog.unselected_session_config_state(),
+            |selection| request.model_catalog.session_config_state(selection),
+        );
     Ok(Snapshot {
         resource: request.channel,
         from_seq,
@@ -123,7 +148,7 @@ fn session_snapshot(
             active_clients: Vec::new(),
             chats,
             default_chat: session.default_chat,
-            config: Some(request.model_catalog.session_config_state(&model_selection)),
+            config: Some(config),
             customizations: None,
             changesets: None,
             input_needed: None,
@@ -191,7 +216,7 @@ fn chat_state(read: &redb::ReadTransaction, chat: &PersistedChat) -> Result<Chat
         active_turn: chat.active.as_ref().map(active_turn),
         steering_message: None,
         queued_messages: None,
-        draft: None,
+        draft: chat.draft.clone(),
         meta: None,
     })
 }

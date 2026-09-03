@@ -8,6 +8,7 @@ use workspace_agent_tools::{
 
 pub struct TestDir {
     path: PathBuf,
+    base: PathBuf,
 }
 
 impl TestDir {
@@ -16,7 +17,7 @@ impl TestDir {
         fs::create_dir_all(&base)?;
         let path = base.join(format!("{name}-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&path)?;
-        Ok(Self { path })
+        Ok(Self { path, base })
     }
 
     pub fn path(&self) -> &Path {
@@ -27,6 +28,7 @@ impl TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+        let _ = fs::remove_dir(&self.base);
     }
 }
 

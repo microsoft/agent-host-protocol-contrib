@@ -190,7 +190,7 @@ pub(super) fn shell_command(marker: &str) -> String {
     {
         format!("echo {SHELL_OUTPUT} > {marker} & echo {SHELL_OUTPUT}")
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
         format!("printf %s {SHELL_OUTPUT} > {marker}; printf %s {SHELL_OUTPUT}")
     }

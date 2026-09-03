@@ -14,6 +14,7 @@ import type {
   ConversationPartView,
   ConversationTurn,
 } from "./projection-types"
+import { projectDraft, type DraftView } from "./drafts"
 import { modelSelectionFromConfig, projectSessionConfig, type SessionConfigView } from "./model-config"
 import { projectToolCall } from "./tool-projection"
 
@@ -49,6 +50,7 @@ export interface ChatView {
   resource: string
   title: string
   activity?: string
+  draft?: DraftView
   turns: readonly ConversationTurn[]
   activeTurn?: ConversationTurn
 }
@@ -85,6 +87,10 @@ export function responseText(parts: readonly ResponsePart[]): string {
       return []
     })
     .join("")
+}
+
+export function visibleResponseParts(parts: readonly ConversationPartView[]): readonly ConversationPartView[] {
+  return parts.filter((part) => part.kind !== ResponsePartKind.Markdown || part.content.length > 0)
 }
 
 function projectTurn(turn: Turn): ConversationTurn {
@@ -126,6 +132,7 @@ export function projectChat(chat: ChatState): ChatView {
     resource: chat.resource,
     title: chat.title,
     activity: chat.activity,
+    draft: projectDraft(chat.draft),
     turns: chat.turns.map(projectTurn),
     activeTurn: projectActiveTurn(chat),
   }
@@ -160,4 +167,8 @@ export function projectSessionList(summaries: Iterable<SessionSummary>): readonl
 
 export function isTerminalTurn(turn: ConversationTurn): boolean {
   return turn.state === TurnState.Complete || turn.state === TurnState.Cancelled || turn.state === TurnState.Error
+}
+
+export function latestTurnId(chat?: ChatView): string | undefined {
+  return chat?.activeTurn?.id ?? chat?.turns[chat.turns.length - 1]?.id
 }

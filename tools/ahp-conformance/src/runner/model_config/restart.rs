@@ -4,20 +4,22 @@ use super::super::advanced::fixture_prompt;
 use super::super::local_stack::LocalStack;
 use super::super::ConformanceError;
 use super::helpers::{
-    assert_action_model, assert_fixture_request, assert_historical_model, assert_session_config,
-    chat_state, complete_turn, create_session, model_selection, session_config, session_state,
-    REASONING_MODEL,
+    assert_session_config, chat_state, create_session, model_selection, session_config,
+    session_state, REASONING_MODEL,
 };
 use super::session::initialized_probe;
+use super::turns::{
+    assert_action_model, assert_fixture_request, assert_historical_model, complete_turn,
+};
 
-pub(super) async fn session_model_restart(
+pub(in super::super) async fn session_model_restart(
     stack: &LocalStack,
     timeout: Duration,
 ) -> Result<String, ConformanceError> {
     let first = stack.start_host().await?;
     let target = first.websocket_url();
     let selection = model_selection(REASONING_MODEL, Some("high"));
-    let retained = async {
+    let retained: Result<_, ConformanceError> = async {
         let mut probe = initialized_probe(&target, timeout, "session-model-restart-create").await?;
         let session = create_session(
             &mut probe,
@@ -37,10 +39,11 @@ pub(super) async fn session_model_restart(
 
     let restarted = stack.start_host().await?;
     let target = restarted.websocket_url();
-    let verified = async {
+    let verified: Result<(), ConformanceError> = async {
         let mut probe = initialized_probe(&target, timeout, "session-model-restart-verify").await?;
         let state = session_state(&mut probe, &retained.session).await?;
         assert_session_config(&state, &selection)?;
+        chat_state(&mut probe, &retained.chat).await?;
         let request = stack.fixture_requests().len();
         let started = complete_turn(
             &mut probe,

@@ -6,6 +6,10 @@ Run a local OpenAI-compatible endpoint:
 cargo run -p deterministic-openai -- --bind 127.0.0.1:8899
 ```
 
+```bash
+cargo run -p deterministic-openai -- --bind 127.0.0.1:8899
+```
+
 The CLI uses the reusable `deterministic-openai-fixture` library crate
 (`deterministic_openai` in Rust), including `RunningFixture` for test stacks.
 

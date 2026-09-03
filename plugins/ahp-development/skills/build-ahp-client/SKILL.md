@@ -96,6 +96,12 @@ Use a connection epoch/token (or equivalent ownership guard):
 6. Re-fetch catalog state after reconnect because protocol notifications are
    not replayed.
 
+For configurable agents, render the host's `SessionModelInfo.configSchema` and
+session configuration schema instead of hardcoding provider-specific values.
+Use `resolveSessionConfig` and `sessionConfigCompletions`, preserve unknown
+configuration entries when editing known ones, and attach the effective
+`ModelSelection` to the user message so history records what actually ran.
+
 ## Validate and document
 
 Test the smallest layer first: reducer/projection purity, sequence rejection,

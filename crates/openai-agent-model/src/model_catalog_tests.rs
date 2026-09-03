@@ -26,8 +26,7 @@ async fn lists_models_in_sorted_deduplicated_order_from_a_complete_endpoint(
     );
     let address = start_server(app(state.clone())).await?;
     let model = OpenAiModel::new(
-        ModelConfig::new(format!("http://{address}/v1/responses"), "configured-model")
-            .with_api_key("catalog-token"),
+        ModelConfig::new(format!("http://{address}/v1/responses")).with_api_key("catalog-token"),
     )?;
 
     assert_eq!(
@@ -97,10 +96,7 @@ async fn distinguishes_unsupported_model_catalog_from_auth_and_malformed_respons
 }
 
 fn client(address: std::net::SocketAddr) -> Result<OpenAiModel, ModelError> {
-    OpenAiModel::new(ModelConfig::new(
-        format!("http://{address}"),
-        "configured-model",
-    ))
+    OpenAiModel::new(ModelConfig::new(format!("http://{address}")))
 }
 
 fn app(state: ModelCatalogState) -> Router {

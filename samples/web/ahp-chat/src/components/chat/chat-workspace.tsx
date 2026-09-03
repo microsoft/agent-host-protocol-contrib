@@ -51,8 +51,7 @@ export function ChatWorkspace({ service, snapshot }: ChatWorkspaceProps) {
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <SessionSidebar
           snapshot={snapshot}
-          onCreateSession={(workspaceInput, config) => service.createSession(workspaceInput, config)}
-          onResolveSessionConfig={service.resolveSessionConfig}
+          onCreateSession={(workspaceInput) => service.createSession(workspaceInput)}
           onRefresh={() => service.refreshSessions()}
           onSelect={(sessionUri) => service.selectSession(sessionUri)}
         />
@@ -112,11 +111,10 @@ export function ChatWorkspace({ service, snapshot }: ChatWorkspaceProps) {
             chat={snapshot.selectedChat}
             connected={connected}
             models={snapshot.models}
-            selection={modelSelectionFromConfig(session?.config?.values)}
-            configPending={snapshot.pendingSessionConfig === session?.resource}
-            onSend={(text) => service.sendPrompt(text)}
+            sessionModel={modelSelectionFromConfig(session?.config?.values)}
+            onDraftChange={(draft, expectedTurnId) => service.updateDraft(draft, expectedTurnId)}
+            onSend={(draft) => service.sendPrompt(draft)}
             onCancel={() => service.cancelActiveTurn()}
-            onChangeModel={(model) => service.changeSessionModel(model)}
           />
         </section>
       </div>

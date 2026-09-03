@@ -1,6 +1,6 @@
 //! Atomic tool lifecycle transitions and sequential execution.
 
-use ahp_types::state::{ConfirmationOption, ToolCallConfirmationReason};
+use ahp_types::state::{ConfirmationOption, ResponsePart, ToolCallConfirmationReason};
 use openai_agent_model::ModelToolCall;
 use tokio_util::sync::CancellationToken;
 use workspace_agent_tools::{ExecutionOutcome, ToolExecution, ToolInvocation};
@@ -13,6 +13,7 @@ use crate::store::ToolCallTransition;
 pub(crate) async fn append_text(
     host: &CoreHost,
     started: &crate::StartedTurn,
+    part_id: String,
     chunk: String,
     cancellation: &CancellationToken,
 ) -> Result<(), TurnOutcome> {
@@ -23,7 +24,27 @@ pub(crate) async fn append_text(
     let transition = host
         .inner
         .store
-        .append_text(&started.chat, &started.turn_id, &chunk)
+        .append_text(&started.chat, &started.turn_id, &part_id, &chunk)
+        .map_err(TurnFailure::tool)
+        .map_err(TurnOutcome::Failed)?;
+    host.fanout(&transition).await;
+    Ok(())
+}
+
+pub(crate) async fn append_response_part(
+    host: &CoreHost,
+    started: &crate::StartedTurn,
+    part: ResponsePart,
+    cancellation: &CancellationToken,
+) -> Result<(), TurnOutcome> {
+    let _guard = host.inner.publish_lock.lock().await;
+    if cancelled(host, cancellation) {
+        return Err(TurnOutcome::Cancelled);
+    }
+    let transition = host
+        .inner
+        .store
+        .append_response_part(&started.chat, &started.turn_id, part)
         .map_err(TurnFailure::tool)
         .map_err(TurnOutcome::Failed)?;
     host.fanout(&transition).await;

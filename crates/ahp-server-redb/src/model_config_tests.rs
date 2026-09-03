@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ahp_server_core::{
-    ActionReplay, CreateSession, FinishTurn, HostStore, MarkSessionReady, ModelCatalog,
-    SnapshotRequest, TurnStart, UpdateSessionConfig,
+    ActionReplay, ChangeDraft, CreateSession, FinishTurn, HostStore, MarkSessionReady,
+    ModelCatalog, SnapshotRequest, StoreConflict, StoreError, TurnStart, UpdateSessionConfig,
 };
 use ahp_types::actions::{ActionOrigin, ChatTurnStartedAction, StateAction};
 use ahp_types::state::{Message, ModelSelection, SnapshotState};
@@ -11,6 +11,10 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{RedbHostStore, RedbStoreError};
+
+mod draft;
+mod history;
+mod stability;
 
 struct Fixture {
     path: PathBuf,
@@ -49,10 +53,10 @@ fn catalog() -> ModelCatalog {
     let beta = ModelCatalog::single("beta").models.remove(0);
     ModelCatalog {
         models: vec![alpha, beta],
-        default_selection: ModelSelection {
+        default_selection: Some(ModelSelection {
             id: "alpha".into(),
             config: None,
-        },
+        }),
     }
 }
 
@@ -89,7 +93,7 @@ fn model_config_actions_and_effective_models_survive_restart(
         default_chat: chat.into(),
         provider: "openai".into(),
         workspace: "file:///workspace".into(),
-        model_selection: selection("beta", "medium"),
+        model_selection: Some(selection("beta", "medium")),
     })?;
     fixture.store.mark_session_ready(MarkSessionReady {
         session: session.into(),
@@ -104,6 +108,7 @@ fn model_config_actions_and_effective_models_survive_restart(
     fixture.store.finish_turn(FinishTurn::Complete {
         chat: chat.into(),
         turn_id: "first".into(),
+        model_cursor: None,
     })?;
     let change = fixture.store.update_session_config(UpdateSessionConfig {
         session: session.into(),
@@ -157,6 +162,7 @@ fn model_config_actions_and_effective_models_survive_restart(
     fixture.store.finish_turn(FinishTurn::Complete {
         chat: chat.into(),
         turn_id: "second".into(),
+        model_cursor: None,
     })?;
     let chat_state = fixture.store.snapshot(SnapshotRequest {
         channel: chat.into(),
@@ -188,7 +194,7 @@ fn legacy_session_uses_the_catalog_default_when_projected_and_started(
         default_chat: chat.into(),
         provider: "openai".into(),
         workspace: "file:///workspace".into(),
-        model_selection: selection("beta", "medium"),
+        model_selection: Some(selection("beta", "medium")),
     })?;
     fixture.store.test_write(|write| {
         let mut session = crate::sessions::load_session(write, session)?
@@ -218,5 +224,119 @@ fn legacy_session_uses_the_catalog_default_when_projected_and_started(
         legacy_default_selection: catalog().default_selection,
     })?;
     assert_eq!(started.value.model_selection.id, "alpha");
+    Ok(())
+}
+
+#[test]
+fn legacy_session_without_a_catalog_default_requires_repair_before_execution(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = Fixture::new()?;
+    let session = "ahp-session:/legacy-no-default";
+    let chat = "ahp-chat:/legacy-no-default";
+    fixture.store.create_session(CreateSession {
+        session: session.into(),
+        default_chat: chat.into(),
+        provider: "openai".into(),
+        workspace: "file:///workspace".into(),
+        model_selection: Some(selection("alpha", "medium")),
+    })?;
+    fixture.store.test_write(|write| {
+        let mut session = crate::sessions::load_session(write, session)?
+            .ok_or_else(|| StoreError::Backend("missing session".into()))?;
+        session.model_selection = None;
+        crate::sessions::write_session(write, &session)
+    })?;
+    fixture.reopen()?;
+
+    let catalog = ModelCatalog::new([("alpha", "Alpha")]);
+    let snapshot = fixture.store.snapshot(SnapshotRequest {
+        channel: session.into(),
+        model_catalog: catalog,
+        server_tools: Vec::new(),
+    })?;
+    let SnapshotState::Session(state) = snapshot.state else {
+        return Err("expected session snapshot".into());
+    };
+    let config = state.config.ok_or("missing session config")?;
+    assert!(config.values.get("model").is_none());
+    assert_eq!(config.schema.required, Some(vec!["model".into()]));
+
+    assert!(matches!(
+        fixture.store.start_turn(TurnStart {
+            chat: chat.into(),
+            action: start("unrepaired")?,
+            origin: None,
+            legacy_default_selection: None,
+        }),
+        Err(StoreError::Conflict(StoreConflict::MissingModelSelection(
+            _
+        )))
+    ));
+    let explicit = serde_json::from_value(json!({
+        "turnId": "explicit-model",
+        "startedAt": "2026-09-02T00:00:00.000Z",
+        "message": {
+            "text": "explicit selection",
+            "origin": { "kind": "user" },
+            "model": { "id": "alpha", "config": { "thinkingLevel": "medium" } }
+        }
+    }))?;
+    let started = fixture.store.start_turn(TurnStart {
+        chat: chat.into(),
+        action: explicit,
+        origin: None,
+        legacy_default_selection: None,
+    })?;
+    assert_eq!(started.value.model_selection, selection("alpha", "medium"));
+    fixture.store.finish_turn(FinishTurn::Complete {
+        chat: chat.into(),
+        turn_id: "explicit-model".into(),
+        model_cursor: None,
+    })?;
+    let snapshot = fixture.store.snapshot(SnapshotRequest {
+        channel: chat.into(),
+        model_catalog: ModelCatalog::new([("alpha", "Alpha")]),
+        server_tools: Vec::new(),
+    })?;
+    let SnapshotState::Chat(snapshot) = snapshot.state else {
+        return Err("expected chat snapshot".into());
+    };
+    assert_eq!(
+        snapshot.turns[0].message.model,
+        Some(selection("alpha", "medium"))
+    );
+    fixture.store.change_draft(ChangeDraft {
+        chat: chat.into(),
+        draft: Some(serde_json::from_value(json!({
+            "text": "draft selection", "origin": { "kind": "user" },
+            "model": { "id": "alpha", "config": { "thinkingLevel": "medium" } }
+        }))?),
+        turn_precondition: Default::default(),
+        origin: None,
+    })?;
+    let started = fixture.store.start_turn(TurnStart {
+        chat: chat.into(),
+        action: start("draft-model")?,
+        origin: None,
+        legacy_default_selection: None,
+    })?;
+    assert_eq!(started.value.model_selection, selection("alpha", "medium"));
+    fixture.store.finish_turn(FinishTurn::Complete {
+        chat: chat.into(),
+        turn_id: "draft-model".into(),
+        model_cursor: None,
+    })?;
+    fixture.store.update_session_config(UpdateSessionConfig {
+        session: session.into(),
+        model_selection: selection("alpha", "medium"),
+        origin: None,
+    })?;
+    let started = fixture.store.start_turn(TurnStart {
+        chat: chat.into(),
+        action: start("repaired")?,
+        origin: None,
+        legacy_default_selection: None,
+    })?;
+    assert_eq!(started.value.model_selection, selection("alpha", "medium"));
     Ok(())
 }

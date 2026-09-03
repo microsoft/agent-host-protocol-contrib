@@ -87,27 +87,37 @@ pub struct ModelConfig {
     /// Host URL, `/v1` URL, or complete `/responses` or `/chat/completions`
     /// endpoint URL.
     pub base_url: String,
-    /// Model identifier sent in every request.
-    pub model: String,
+    /// Model identifier used when a request does not select one explicitly.
+    pub model: Option<String>,
     /// Optional bearer token.
     pub api_key: Option<String>,
     /// Protocol selection. A complete endpoint URL implies its matching API.
     pub api: ModelApi,
     /// Connection/header and per-body-chunk idle timeouts.
     pub timeouts: StreamTimeouts,
+    /// Whether Responses requests may continue a stored response chain.
+    pub response_chaining: bool,
 }
 
 impl ModelConfig {
     /// Builds a configuration using automatic API selection and default
     /// timeouts.
-    pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
-            model: model.into(),
+            model: None,
             api: ModelApi::Auto,
             api_key: None,
             timeouts: StreamTimeouts::default(),
+            response_chaining: false,
         }
+    }
+
+    /// Configures the model used when a request does not select one explicitly.
+    #[must_use]
+    pub fn with_default_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
     }
 
     /// Adds a bearer token to this configuration.
@@ -125,6 +135,13 @@ impl ModelConfig {
     /// Replaces the stream timeout settings.
     pub const fn with_timeouts(mut self, timeouts: StreamTimeouts) -> Self {
         self.timeouts = timeouts;
+        self
+    }
+
+    /// Enables Responses API `previous_response_id` continuation.
+    #[must_use]
+    pub const fn with_response_chaining(mut self, enabled: bool) -> Self {
+        self.response_chaining = enabled;
         self
     }
 }

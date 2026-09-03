@@ -39,7 +39,7 @@ pub const CHAT_URI: &str = "ahp-chat:/minimal-chat-host";
 
 #[rustfmt::skip]
 #[derive(Clone, Debug)]
-pub struct HostConfig { pub bind: SocketAddr, pub openai_base_url: String, pub openai_model: String, pub openai_api_key: Option<String> }
+pub struct HostConfig { pub bind: SocketAddr, pub openai_base_url: String, pub openai_model: String, pub openai_api_key: Option<String>, pub response_chaining: bool }
 
 #[derive(Debug)]
 pub struct HostError(pub(crate) String);
@@ -63,9 +63,9 @@ impl RunningHost {
 #[derive(Clone)]
 pub(crate) struct AppState { pub(crate) config: Arc<RuntimeConfig>, pub(crate) http: Client, pub(crate) shared: Arc<Mutex<Shared>>, pub(crate) peers: Arc<Mutex<HashMap<u64, Peer>>>, pub(crate) publication: Arc<Mutex<()>> }
 #[rustfmt::skip]
-pub(crate) struct RuntimeConfig { pub(crate) responses_url: Url, pub(crate) model: String, pub(crate) api_key: Option<String> }
+pub(crate) struct RuntimeConfig { pub(crate) responses_url: Url, pub(crate) model: String, pub(crate) api_key: Option<String>, pub(crate) response_chaining: bool }
 #[rustfmt::skip]
-pub(crate) struct Shared { pub(crate) next_peer: u64, pub(crate) server_seq: i64, pub(crate) created_at: String, pub(crate) modified_at: String, pub(crate) turns: Vec<FinishedTurn>, pub(crate) active: Option<ActiveTurn> }
+pub(crate) struct Shared { pub(crate) next_peer: u64, pub(crate) server_seq: i64, pub(crate) created_at: String, pub(crate) modified_at: String, pub(crate) turns: Vec<FinishedTurn>, pub(crate) active: Option<ActiveTurn>, pub(crate) response_id: Option<String> }
 #[rustfmt::skip]
 pub(crate) struct ActiveTurn { pub(crate) id: String, pub(crate) started_at: String, pub(crate) started: Instant, pub(crate) message: Value, pub(crate) response: String, pub(crate) abort: AbortHandle }
 #[rustfmt::skip]
@@ -90,6 +90,7 @@ pub async fn start(config: HostConfig) -> HostResult<RunningHost> {
             responses_url,
             model: config.openai_model,
             api_key: config.openai_api_key,
+            response_chaining: config.response_chaining,
         }),
         http: Client::new(),
         shared: Arc::new(Mutex::new(Shared {
@@ -99,6 +100,7 @@ pub async fn start(config: HostConfig) -> HostResult<RunningHost> {
             modified_at: now,
             turns: Vec::new(),
             active: None,
+            response_id: None,
         })),
         peers: Arc::new(Mutex::new(HashMap::new())),
         publication: Arc::new(Mutex::new(())),
@@ -173,25 +175,27 @@ pub(crate) async fn start_turn(state: &AppState, action: &Value, origin: Value) 
     };
     let (abort, registration) = AbortHandle::new_pair();
     let _publication = state.publication.lock().await;
-    let started = {
+    let context = {
         let mut shared = state.shared.lock().await;
         if shared.active.is_some() {
-            false
+            None
         } else {
+            let history = shared.turns.clone();
+            let response_id = shared.response_id.clone();
             shared.modified_at = timestamp();
             shared.active = Some(ActiveTurn { id: turn_id.clone(), started_at: started_at.clone(), started: Instant::now(), message: message.clone(), response: String::new(), abort });
-            true
+            Some((history, response_id))
         }
     };
-    if !started {
+    let Some((history, response_id)) = context else {
         state.publish_locked(CHAT_URI, action.clone(), Some(origin), Some("a text turn is already active")).await;
         return;
-    }
+    };
     state.publish_locked(CHAT_URI, json!({ "type": "chat/turnStarted", "turnId": turn_id, "startedAt": started_at, "message": message }), Some(origin), None).await;
     state.publish_locked(CHAT_URI, json!({ "type": "chat/responsePart", "turnId": turn_id, "part": markdown_part(&turn_id, "") }), None, None).await;
     drop(_publication);
     let state = state.clone();
-    tokio::spawn(async move { let _ = Abortable::new(responses::run_turn(state, turn_id, prompt), registration).await; });
+    tokio::spawn(async move { let _ = Abortable::new(responses::run_turn(state, turn_id, prompt, history, response_id), registration).await; });
 }
 
 fn incoming_turn(action: &Value) -> Option<(String, String, Value, String)> {

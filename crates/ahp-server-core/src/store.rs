@@ -3,8 +3,10 @@
 use ahp_types::actions::{ActionEnvelope, ActionOrigin, ChatTurnStartedAction, StateAction};
 use ahp_types::common::Uri;
 use ahp_types::state::{
-    ChatSummary, ErrorInfo, ModelSelection, ResponsePart, SessionSummary, Snapshot, ToolCallState,
+    ChatSummary, ErrorInfo, Message, ModelSelection, ResponsePart, SessionSummary, Snapshot,
+    ToolCallState,
 };
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use workspace_agent_tools::ExactCommandApproval;
 
@@ -54,6 +56,24 @@ pub enum StoreConflict {
     /// The session has not reached ready state.
     #[error("session {0:?} is not ready")]
     SessionNotReady(Uri),
+    /// A draft must be a user-authored message.
+    #[error("draft for chat {0:?} must be user-authored")]
+    InvalidDraft(Uri),
+    /// A conditional draft update was based on an older turn.
+    #[error(
+        "draft for chat {chat:?} expected latest turn {expected:?}, but current latest turn is {actual:?}"
+    )]
+    StaleDraft {
+        /// Chat channel.
+        chat: Uri,
+        /// Latest turn observed by the client.
+        expected: Option<String>,
+        /// Latest turn committed by the host.
+        actual: Option<String>,
+    },
+    /// A legacy session has no persisted model and no host default can repair it.
+    #[error("session {0:?} has no model selection; select a model before starting a turn")]
+    MissingModelSelection(Uri),
     /// A chat already has an active turn.
     #[error("chat {0:?} already has an active turn")]
     ActiveTurn(Uri),
@@ -125,7 +145,7 @@ pub struct CreateSession {
     /// Selected workspace URI.
     pub workspace: Uri,
     /// Resolved default model used for every turn without a message override.
-    pub model_selection: ModelSelection,
+    pub model_selection: Option<ModelSelection>,
 }
 
 /// Result of creating a session and default chat.
@@ -174,7 +194,7 @@ pub struct TurnStart {
     /// Originating client sequence, if supplied.
     pub origin: Option<ActionOrigin>,
     /// Default used only when projecting a legacy session with no saved selection.
-    pub legacy_default_selection: ModelSelection,
+    pub legacy_default_selection: Option<ModelSelection>,
 }
 
 /// Durable output required to execute a started turn.
@@ -184,12 +204,28 @@ pub struct StartedTurn {
     pub chat: Uri,
     /// Active turn identifier.
     pub turn_id: String,
+    /// Completed turns that precede this turn, in conversation order.
+    pub history: Vec<ahp_types::state::Turn>,
+    /// Last successful response in the same configured upstream scope.
+    pub model_cursor: Option<ModelCursor>,
     /// Original user message.
     pub message: ahp_types::state::Message,
     /// Persisted session workspace.
     pub workspace: Uri,
     /// The validated model selection that was durably recorded on the message.
     pub model_selection: ModelSelection,
+}
+
+/// Persisted pointer to provider-managed conversation state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCursor {
+    /// Stable endpoint/provider scope that issued the cursor.
+    pub scope: String,
+    /// Provider response identifier.
+    pub response_id: String,
+    /// Latest completed AHP turn represented by the provider chain.
+    pub turn_id: String,
 }
 
 /// A fully validated mutable session-model change.
@@ -203,6 +239,29 @@ pub struct UpdateSessionConfig {
     pub origin: Option<ActionOrigin>,
 }
 
+/// A persisted chat-input draft update.
+#[derive(Clone, Debug)]
+pub struct ChangeDraft {
+    /// Chat channel whose draft changes.
+    pub chat: Uri,
+    /// New user-authored draft, or `None` to clear it.
+    pub draft: Option<Message>,
+    /// Optional compare-and-set condition supplied by the client.
+    pub turn_precondition: DraftTurnPrecondition,
+    /// Originating client sequence, if supplied.
+    pub origin: Option<ActionOrigin>,
+}
+
+/// Causal condition for a chat draft update.
+#[derive(Clone, Debug, Default)]
+pub enum DraftTurnPrecondition {
+    /// Accept the update without checking turn history.
+    #[default]
+    Unchecked,
+    /// Accept only if this is still the chat's latest active or completed turn.
+    Latest(Option<String>),
+}
+
 /// The terminal state a store must apply atomically to an active turn.
 #[derive(Clone, Debug)]
 pub enum FinishTurn {
@@ -212,6 +271,8 @@ pub enum FinishTurn {
         chat: Uri,
         /// Active turn.
         turn_id: String,
+        /// Final provider cursor to retain for the next turn.
+        model_cursor: Option<ModelCursor>,
     },
     /// A client cancelled a turn.
     Cancelled {
@@ -292,6 +353,13 @@ pub trait HostStore: Send + Sync {
     fn list_sessions(&self) -> Result<Vec<SessionSummary>, StoreError>;
     /// Gets one root session summary.
     fn session_summary(&self, session: &str) -> Result<SessionSummary, StoreError>;
+    /// Gets the saved selection for a chat's session, using the supplied default
+    /// only when a legacy record has no saved selection.
+    fn model_selection_for_chat(
+        &self,
+        chat: &str,
+        legacy_default_selection: Option<&ModelSelection>,
+    ) -> Result<ModelSelection, StoreError>;
     /// Atomically creates session state and its initial action journal entries.
     fn create_session(
         &self,
@@ -302,6 +370,8 @@ pub trait HostStore: Send + Sync {
         &self,
         request: UpdateSessionConfig,
     ) -> Result<CommittedTransition<()>, StoreError>;
+    /// Atomically persists a chat draft and its authoritative action.
+    fn change_draft(&self, request: ChangeDraft) -> Result<CommittedTransition<()>, StoreError>;
     /// Atomically transitions a session to ready.
     fn mark_session_ready(
         &self,
@@ -322,11 +392,19 @@ pub trait HostStore: Send + Sync {
         &self,
         request: TurnStart,
     ) -> Result<CommittedTransition<StartedTurn>, StoreError>;
-    /// Atomically appends a text chunk and its `chat/delta` action.
+    /// Atomically appends one response part and its `chat/responsePart` action.
+    fn append_response_part(
+        &self,
+        chat: &str,
+        turn_id: &str,
+        part: ResponsePart,
+    ) -> Result<CommittedTransition<()>, StoreError>;
+    /// Atomically appends a text chunk to one markdown part and its `chat/delta` action.
     fn append_text(
         &self,
         chat: &str,
         turn_id: &str,
+        part_id: &str,
         chunk: &str,
     ) -> Result<CommittedTransition<()>, StoreError>;
     /// Atomically records a streaming tool response part and start action.

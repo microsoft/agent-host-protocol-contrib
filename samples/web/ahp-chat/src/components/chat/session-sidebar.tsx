@@ -1,15 +1,6 @@
-import { useEffect, useId, useRef, useState } from "react"
+import { useId, useState } from "react"
 import { LoaderCircle, MessageSquarePlus, RefreshCw } from "lucide-react"
 
-import {
-  isAvailableModelSelection,
-  loadLastModelSelection,
-  modelSelectionFromConfig,
-  saveLastModelSelection,
-  toModelSelection,
-  type ModelSelectionView,
-} from "@/ahp/model-config"
-import type { ResolveSessionConfigResult } from "@microsoft/agent-host-protocol"
 import type { AppSnapshot } from "@/ahp/store"
 import { formatWorkspace, loadLastWorkspaceInput } from "@/ahp/workspace"
 import { Button } from "@/components/ui/button"
@@ -17,79 +8,24 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 
-import { ModelPicker } from "./model-picker"
-
 interface SessionSidebarProps {
   snapshot: AppSnapshot
-  onCreateSession: (workspaceInput: string, config: Record<string, unknown>) => Promise<boolean>
-  onResolveSessionConfig: (
-    workspaceInput: string,
-    config: Record<string, unknown>,
-  ) => Promise<ResolveSessionConfigResult | undefined>
+  onCreateSession: (workspaceInput: string) => Promise<boolean>
   onRefresh: () => Promise<void>
   onSelect: (session: string) => Promise<void>
 }
 
-export function SessionSidebar({
-  snapshot,
-  onCreateSession,
-  onResolveSessionConfig,
-  onRefresh,
-  onSelect,
-}: SessionSidebarProps) {
-  const connected = snapshot.connection.phase === "connected"
+export function SessionSidebar({ snapshot, onCreateSession, onRefresh, onSelect }: SessionSidebarProps) {
   const loading = snapshot.connection.phase === "reconnecting"
   const workspaceId = useId()
-  const request = useRef(0)
   const [workspaceInput, setWorkspaceInput] = useState(loadLastWorkspaceInput)
-  const [selection, setSelection] = useState<ModelSelectionView | undefined>(loadLastModelSelection)
-  const [resolved, setResolved] = useState<ResolveSessionConfigResult>()
-  const [resolving, setResolving] = useState(false)
   const [creating, setCreating] = useState(false)
-  const hostKey = snapshot.connection.address ?? ""
-  const catalogKey = snapshot.models.map((model) => `${model.id}:${JSON.stringify(model.configSchema)}`).join("|")
-
-  function configFor(next: ModelSelectionView | undefined, includeResolved = true): Record<string, unknown> {
-    const config = includeResolved ? { ...(resolved?.values ?? {}) } : {}
-    if (next) config.model = toModelSelection(next)
-    else delete config.model
-    return config
-  }
-
-  async function resolve(
-    next: ModelSelectionView | undefined,
-    includeResolved = true,
-  ): Promise<ResolveSessionConfigResult | undefined> {
-    const token = ++request.current
-    setResolving(true)
-    const result = await onResolveSessionConfig(workspaceInput, configFor(next, includeResolved))
-    if (token !== request.current) return undefined
-    setResolving(false)
-    if (!result) return undefined
-    const resolvedSelection = modelSelectionFromConfig(result.values)
-    setResolved(result)
-    setSelection(resolvedSelection)
-    saveLastModelSelection(isAvailableModelSelection(snapshot.models, resolvedSelection) ? resolvedSelection : undefined)
-    return result
-  }
-
-  useEffect(() => {
-    if (!connected) {
-      setResolved(undefined)
-      return
-    }
-    const saved = isAvailableModelSelection(snapshot.models, selection) ? selection : undefined
-    void resolve(saved, false)
-    // The resolver is deliberately driven by connection/catalog changes; picker changes call it directly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, hostKey, catalogKey])
 
   async function createSession(): Promise<void> {
-    if (creating || resolving) return
+    if (creating) return
     setCreating(true)
     try {
-      const config = await resolve(selection)
-      if (config) await onCreateSession(workspaceInput, config.values)
+      await onCreateSession(workspaceInput)
     } finally {
       setCreating(false)
     }
@@ -103,7 +39,7 @@ export function SessionSidebar({
           <Button variant="ghost" size="icon-sm" onClick={() => void onRefresh()} aria-label="Refresh sessions">
             <RefreshCw className={loading ? "animate-spin" : ""} />
           </Button>
-          <Button size="sm" onClick={() => void createSession()} disabled={!connected || creating || resolving}>
+          <Button size="sm" onClick={() => void createSession()} disabled={creating}>
             <MessageSquarePlus /> New
           </Button>
         </div>
@@ -121,21 +57,9 @@ export function SessionSidebar({
           id={workspaceId}
           value={workspaceInput}
           onChange={(event) => setWorkspaceInput(event.target.value)}
-          onBlur={() => void resolve(selection)}
           placeholder={"C:\\work\\project, /work/project, or file:///"}
         />
-        <ModelPicker
-          models={snapshot.models}
-          selection={selection}
-          disabled={!connected || creating || resolving}
-          onChange={(next) => {
-            setSelection(next)
-            void resolve(next)
-          }}
-        />
-        <p className="text-xs text-muted-foreground">
-          {resolving ? "Loading host defaults…" : "Workspace paths are interpreted on the host machine."}
-        </p>
+        <p className="text-xs text-muted-foreground">An absolute path or file URI, interpreted on the host machine.</p>
       </form>
       <nav aria-label="Sessions" className="min-h-0 space-y-1 overflow-y-auto p-2">
         {snapshot.sessions.length === 0 && (

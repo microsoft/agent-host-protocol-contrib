@@ -51,6 +51,12 @@ pub enum CoreHostError {
     /// A store failed while processing a request.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// The convenience constructor cannot discover models without a configured
+    /// adapter default.
+    #[error(
+        "an explicit ModelCatalog is required when the model adapter has no configured default"
+    )]
+    ExplicitModelCatalogRequired,
     /// A protocol frame could not be serialized.
     #[error("JSON-RPC serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
@@ -134,7 +140,11 @@ impl CoreHost {
     ) -> Result<Self, CoreHostError> {
         Self::with_model_catalog(
             config,
-            ModelCatalog::single(model.model_name()),
+            ModelCatalog::single(
+                model
+                    .default_model()
+                    .ok_or(CoreHostError::ExplicitModelCatalogRequired)?,
+            ),
             store,
             model,
             profile,

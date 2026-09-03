@@ -12,9 +12,9 @@ use workspace_agent_tools::ExactCommandApproval;
 
 use self::state::Data;
 use crate::store::{
-    ActionReplay, CommittedTransition, CreateChat, CreateSession, CreatedSession, DisposedSession,
-    FinishTurn, HostStore, MarkSessionReady, SnapshotRequest, StartedTurn, StoreConflict,
-    StoreError, ToolCallTransition, TurnStart, UpdateSessionConfig,
+    ActionReplay, ChangeDraft, CommittedTransition, CreateChat, CreateSession, CreatedSession,
+    DisposedSession, FinishTurn, HostStore, MarkSessionReady, SnapshotRequest, StartedTurn,
+    StoreConflict, StoreError, ToolCallTransition, TurnStart, UpdateSessionConfig,
 };
 
 const REPLAY_LIMIT: usize = 2_048;
@@ -120,6 +120,24 @@ impl HostStore for MemoryHostStore {
         self.read(|data| Ok(data.session_summary(data.session(session)?)))
     }
 
+    fn model_selection_for_chat(
+        &self,
+        chat: &str,
+        legacy_default_selection: Option<&ahp_types::state::ModelSelection>,
+    ) -> Result<ahp_types::state::ModelSelection, StoreError> {
+        self.read(|data| {
+            let chat_state = data.chat(chat)?;
+            let session = data.session(&chat_state.session)?;
+            chat_state
+                .draft
+                .as_ref()
+                .and_then(|draft| draft.model.clone())
+                .or_else(|| session.model_selection.clone())
+                .or_else(|| legacy_default_selection.cloned())
+                .ok_or_else(|| StoreConflict::MissingModelSelection(session.uri.clone()).into())
+        })
+    }
+
     fn create_session(
         &self,
         request: CreateSession,
@@ -139,6 +157,10 @@ impl HostStore for MemoryHostStore {
         request: UpdateSessionConfig,
     ) -> Result<CommittedTransition<()>, StoreError> {
         lifecycle::update_session_config(self, request)
+    }
+
+    fn change_draft(&self, request: ChangeDraft) -> Result<CommittedTransition<()>, StoreError> {
+        transitions::change_draft(self, request)
     }
 
     fn create_chat(
@@ -162,13 +184,23 @@ impl HostStore for MemoryHostStore {
         transitions::start_turn(self, request)
     }
 
+    fn append_response_part(
+        &self,
+        chat: &str,
+        turn_id: &str,
+        part: ahp_types::state::ResponsePart,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        transitions::append_response_part(self, chat, turn_id, part)
+    }
+
     fn append_text(
         &self,
         chat: &str,
         turn_id: &str,
+        part_id: &str,
         chunk: &str,
     ) -> Result<CommittedTransition<()>, StoreError> {
-        transitions::append_text(self, chat, turn_id, chunk)
+        transitions::append_text(self, chat, turn_id, part_id, chunk)
     }
 
     fn start_tool(

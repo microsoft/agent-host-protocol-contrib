@@ -61,7 +61,7 @@ impl LocalStack {
             config: AdvancedHostConfig {
                 bind,
                 database_path: artifact.join("database").join("mock-host.redb"),
-                model: ModelConfig::new(fixture.base_url(), "fixture-model"),
+                model: ModelConfig::new(fixture.base_url()).with_default_model("fixture-model"),
                 discover_models: true,
                 workspace_roots: vec![workspace_root],
                 reset_shell_approvals: false,
@@ -84,6 +84,31 @@ impl LocalStack {
         AdvancedHost::start(self.config.clone())
             .await
             .map_err(|error| ConformanceError::Fixture(error.to_string()))
+    }
+
+    pub(super) async fn start_host_without_default(
+        &self,
+    ) -> Result<RunningAdvancedHost, ConformanceError> {
+        let bind = "127.0.0.1:0".parse().map_err(|error| {
+            ConformanceError::Options(format!("invalid loopback host address: {error}"))
+        })?;
+        AdvancedHost::start(AdvancedHostConfig {
+            bind,
+            database_path: self
+                .artifact
+                .join(format!("model-less-session-{}", Uuid::new_v4()))
+                .join("database")
+                .join("mock-host.redb"),
+            model: ModelConfig::new(self.fixture.base_url()),
+            discover_models: true,
+            workspace_roots: vec![self.workspace_root.clone()],
+            reset_shell_approvals: false,
+            chunk_size: 11,
+            allowed_origins: Vec::new(),
+            web_root: None,
+        })
+        .await
+        .map_err(|error| ConformanceError::Fixture(error.to_string()))
     }
 
     pub(super) fn fixture_requests(&self) -> Vec<ObservedRequest> {
@@ -121,6 +146,7 @@ pub async fn run_local_suite(
     if let Ok(report) = &mut report {
         reports::append_model_config_cases(report, &target, &options, &stack).await;
         reports::append_workspace_tool_cases(report, &target, &options, &stack).await;
+        reports::append_draft_cases(report, &target, &options, &stack).await;
     }
     let stopped = host
         .shutdown()

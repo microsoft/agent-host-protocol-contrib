@@ -251,6 +251,7 @@ async fn cancel_turn(state: &AppState, action: &Value, origin: Value) {
         None,
         "chat/turnCancelled",
         Some(origin.clone()),
+        None,
     )
     .await
     {

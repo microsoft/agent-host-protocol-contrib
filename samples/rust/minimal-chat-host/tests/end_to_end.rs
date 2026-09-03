@@ -30,6 +30,22 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, Web
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
+#[test]
+fn builds_responses_url_only_from_http_api_origins() -> TestResult {
+    assert_eq!(
+        responses::endpoint("https://api.example.test")?.as_str(),
+        "https://api.example.test/v1/responses"
+    );
+    for base_url in [
+        "file:///workspace",
+        "mailto:agent@example.test",
+        "https://api.example.test/v1",
+    ] {
+        assert!(responses::endpoint(base_url).is_err(), "{base_url}");
+    }
+    Ok(())
+}
+
 struct Fixture {
     base_url: String,
     shutdown: oneshot::Sender<()>,
@@ -61,6 +77,13 @@ fn parses_fragmented_sse_lines_and_responses_events() -> TestResult {
     assert_eq!(
         parse_responses_event(&events[0])?,
         ResponsesEvent::TextDelta("hello".to_owned())
+    );
+    assert_eq!(
+        parse_responses_event(&SseEvent {
+            event: Some("response.created".to_owned()),
+            data: r#"{"type":"response.created","response":{"id":"resp-1"}}"#.to_owned(),
+        })?,
+        ResponsesEvent::Started("resp-1".to_owned())
     );
     assert_eq!(
         parse_responses_event(&SseEvent {
@@ -142,6 +165,57 @@ async fn forwards_a_delta_before_the_completed_response() -> TestResult {
             other => return Err(io::Error::other(format!("unexpected action {other:?}")).into()),
         }
     }
+
+    socket.close(None).await?;
+    host.shutdown().await;
+    fixture.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn chains_production_responses_between_turns() -> TestResult {
+    let fixture = start_fixture().await?;
+    let host = start_host_with_chaining(&fixture).await?;
+    let mut socket = connect_and_initialize(&host).await?;
+
+    start_turn(&mut socket, "first", "chain-first").await?;
+    wait_for_turn_complete(&mut socket, "chain-first").await?;
+    start_turn(&mut socket, "chain-second", "chain-second").await?;
+    wait_for_turn_complete(&mut socket, "chain-second").await?;
+
+    socket.close(None).await?;
+    host.shutdown().await;
+    fixture.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn clears_the_response_chain_after_cancellation() -> TestResult {
+    let fixture = start_fixture().await?;
+    let host = start_host_with_chaining(&fixture).await?;
+    let mut socket = connect_and_initialize(&host).await?;
+
+    start_turn(&mut socket, "first", "before-cancel").await?;
+    wait_for_turn_complete(&mut socket, "before-cancel").await?;
+    start_turn(&mut socket, "cancel-chain", "cancel-chain").await?;
+    loop {
+        let action = next_action(&mut socket).await?;
+        if action.pointer("/action/type").and_then(Value::as_str) == Some("chat/delta")
+            && action.pointer("/action/turnId").and_then(Value::as_str) == Some("cancel-chain")
+        {
+            break;
+        }
+    }
+    send_action(
+        &mut socket,
+        2,
+        json!({ "type": "chat/turnCancelled", "turnId": "cancel-chain" }),
+    )
+    .await?;
+    wait_for_action(&mut socket, "chat/turnCancelled", 0).await?;
+
+    start_turn(&mut socket, "after-cancel", "after-cancel").await?;
+    wait_for_turn_complete(&mut socket, "after-cancel").await?;
 
     socket.close(None).await?;
     host.shutdown().await;
@@ -382,13 +456,36 @@ async fn invalid_chat_actions_are_rejected_without_wedging_the_client() -> TestR
 }
 
 async fn start_host(fixture: &Fixture) -> TestResult<RunningHost> {
+    start_host_config(fixture, false).await
+}
+
+async fn start_host_with_chaining(fixture: &Fixture) -> TestResult<RunningHost> {
+    start_host_config(fixture, true).await
+}
+
+async fn start_host_config(fixture: &Fixture, response_chaining: bool) -> TestResult<RunningHost> {
     Ok(start(HostConfig {
         bind: "127.0.0.1:0".parse::<SocketAddr>()?,
         openai_base_url: fixture.base_url.clone(),
         openai_model: "fixture-model".to_owned(),
         openai_api_key: None,
+        response_chaining,
     })
     .await?)
+}
+
+async fn wait_for_turn_complete(socket: &mut Socket, turn_id: &str) -> TestResult {
+    loop {
+        let action = next_action(socket).await?;
+        if action.pointer("/action/type").and_then(Value::as_str) == Some("chat/error") {
+            return Err(io::Error::other(format!("turn {turn_id} failed: {action}")).into());
+        }
+        if action.pointer("/action/type").and_then(Value::as_str) == Some("chat/turnComplete")
+            && action.pointer("/action/turnId").and_then(Value::as_str) == Some(turn_id)
+        {
+            return Ok(());
+        }
+    }
 }
 
 async fn connect_and_initialize(host: &RunningHost) -> TestResult<Socket> {
@@ -591,15 +688,68 @@ async fn start_fixture() -> TestResult<Fixture> {
 }
 
 async fn responses(Json(request): Json<Value>) -> Response {
-    let one_input = request
-        .get("input")
-        .and_then(Value::as_array)
-        .is_some_and(|input| input.len() == 1);
-    let prompt = request.pointer("/input/0/content").and_then(Value::as_str);
-    if request.get("stream") != Some(&Value::Bool(true)) || !one_input || prompt.is_none() {
-        return (StatusCode::BAD_REQUEST, "expected one streamed user input").into_response();
+    let input = request.get("input").and_then(Value::as_array);
+    let prompt = input.and_then(|items| {
+        items.iter().rev().find_map(|item| {
+            (item.get("role").and_then(Value::as_str) == Some("user"))
+                .then(|| item.get("content").and_then(Value::as_str))
+                .flatten()
+        })
+    });
+    if request.get("stream") != Some(&Value::Bool(true))
+        || input.is_none_or(Vec::is_empty)
+        || prompt.is_none()
+    {
+        return (StatusCode::BAD_REQUEST, "expected streamed user input").into_response();
     }
-    let delay = if prompt == Some("cancel") {
+    let previous_response_id = request.get("previous_response_id").and_then(Value::as_str);
+    let valid_chain = match prompt {
+        Some("chain-second" | "cancel-chain") => previous_response_id == Some("resp-first"),
+        Some("after-cancel") => {
+            previous_response_id.is_none()
+                && input.is_some_and(|items| {
+                    items.as_slice()
+                        == [
+                            json!({ "role": "user", "content": "first" }),
+                            json!({ "role": "assistant", "content": "firstsecond" }),
+                            json!({ "role": "user", "content": "cancel-chain" }),
+                            json!({ "role": "assistant", "content": "first" }),
+                            json!({ "role": "user", "content": "after-cancel" }),
+                        ]
+                })
+        }
+        _ => previous_response_id.is_none(),
+    };
+    if !valid_chain {
+        return (
+            StatusCode::BAD_REQUEST,
+            "unexpected previous_response_id for prompt",
+        )
+            .into_response();
+    }
+    let response_id = match prompt {
+        Some("chain-second") => "resp-second",
+        Some("cancel-chain") => "resp-cancelled",
+        Some("after-cancel") => "resp-after-cancel",
+        _ => {
+            if previous_response_id.is_some() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "unexpected previous_response_id for initial request",
+                )
+                    .into_response();
+            }
+            "resp-first"
+        }
+    };
+    if request.get("previous_response_id").is_some() && previous_response_id.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "previous_response_id must be a string",
+        )
+            .into_response();
+    }
+    let delay = if matches!(prompt, Some("cancel" | "cancel-chain")) {
         Duration::from_millis(250)
     } else {
         Duration::from_millis(10)
@@ -607,19 +757,21 @@ async fn responses(Json(request): Json<Value>) -> Response {
     let frames = vec![
         (
             Duration::ZERO,
-            "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+            format!(
+                "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"{response_id}\"}}}}\n\n"
+            ),
         ),
         (
             Duration::ZERO,
-            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"first\"}\n\n",
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"first\"}\n\n".to_owned(),
         ),
         (
             delay,
-            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"second\"}\n\n",
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"second\"}\n\n".to_owned(),
         ),
         (
             Duration::ZERO,
-            "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+            "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n".to_owned(),
         ),
     ];
     let stream = futures_util::stream::unfold(frames.into_iter(), |mut frames| async move {

@@ -156,9 +156,14 @@ fn session_snapshot(
             chats,
             default_chat: session.chats.first().cloned(),
             config: Some(
-                request
-                    .model_catalog
-                    .session_config_state(&session.model_selection),
+                session
+                    .model_selection
+                    .as_ref()
+                    .or(request.model_catalog.default_selection.as_ref())
+                    .map_or_else(
+                        || request.model_catalog.unselected_session_config_state(),
+                        |selection| request.model_catalog.session_config_state(selection),
+                    ),
             ),
             customizations: None,
             changesets: None,
@@ -183,7 +188,7 @@ fn chat_state(chat: &Chat) -> ChatState {
         active_turn: chat.active.as_ref().map(active_turn),
         steering_message: None,
         queued_messages: None,
-        draft: None,
+        draft: chat.draft.clone(),
         meta: None,
     }
 }
@@ -240,16 +245,7 @@ fn active_turn(active: &Active) -> ActiveTurn {
 }
 
 fn stored_turn(turn: &StoredTurn) -> Turn {
-    Turn {
-        id: turn.id.clone(),
-        started_at: Some(turn.started_at.clone()),
-        duration: Some(turn.duration),
-        message: turn.message.clone(),
-        response_parts: turn.response_parts.clone(),
-        usage: None,
-        state: turn.state,
-        error: turn.error.clone(),
-    }
+    turn.snapshot()
 }
 
 #[cfg(test)]

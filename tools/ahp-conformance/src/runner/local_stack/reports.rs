@@ -3,7 +3,7 @@
 use super::super::model_config;
 use super::super::streaming::selection;
 use super::super::tools::{cancellation, replace, restart, shell, workspace};
-use super::super::{suite, CaseScope, ConformanceError, Report, RunOptions};
+use super::super::{drafts, suite, CaseScope, ConformanceError, Report, RunOptions};
 use super::LocalStack;
 use advanced_workspace_host::RunningAdvancedHost;
 
@@ -31,44 +31,6 @@ pub(super) async fn append_workspace_tool_cases(
         append_local_case(report, options, "workspace-validation", Ok(String::new()));
     }
 
-    pub(super) async fn append_model_config_cases(
-        report: &mut Report,
-        target: &str,
-        options: &RunOptions,
-        stack: &LocalStack,
-    ) {
-        for name in [
-            "model-catalog",
-            "session-model-config",
-            "session-model-default",
-            "session-model-change",
-            "message-model-override",
-        ] {
-            if !suite::case_selected(&options.selected_cases, name) {
-                append_model_config_case(report, options, name, Ok(String::new()));
-                continue;
-            }
-            let result = match name {
-                "model-catalog" => model_config::model_catalog(target, options.timeout).await,
-                "session-model-config" => {
-                    model_config::session_model_config(target, options.timeout).await
-                }
-                "session-model-default" => {
-                    model_config::session_model_default(target, options.timeout, stack).await
-                }
-                "session-model-change" => {
-                    model_config::session_model_change(target, options.timeout, stack).await
-                }
-                "message-model-override" => {
-                    model_config::message_model_override(target, options.timeout, stack).await
-                }
-                _ => Err(ConformanceError::Options(
-                    "unknown local model configuration case".to_owned(),
-                )),
-            };
-            append_model_config_case(report, options, name, result);
-        }
-    }
     if suite::case_selected(&options.selected_cases, "replace-string-tool") {
         append_local_case(
             report,
@@ -105,6 +67,86 @@ pub(super) async fn append_workspace_tool_cases(
         );
     } else {
         append_local_case(report, options, "tool-cancellation", Ok(String::new()));
+    }
+}
+
+pub(super) async fn append_model_config_cases(
+    report: &mut Report,
+    target: &str,
+    options: &RunOptions,
+    stack: &LocalStack,
+) {
+    for name in [
+        "model-catalog",
+        "session-model-config",
+        "session-model-default",
+        "session-model-change",
+        "message-model-override",
+    ] {
+        if !suite::case_selected(&options.selected_cases, name) {
+            append_model_config_case(report, options, name, Ok(String::new()));
+            continue;
+        }
+        let result = match name {
+            "model-catalog" => model_config::model_catalog(target, options.timeout).await,
+            "session-model-config" => {
+                model_config::session_model_config(target, options.timeout, &stack.workspace_root)
+                    .await
+            }
+            "session-model-default" => {
+                model_config::session_model_default(target, options.timeout, stack).await
+            }
+            "session-model-change" => {
+                model_config::session_model_change(target, options.timeout, stack).await
+            }
+            "message-model-override" => {
+                model_config::message_model_override(target, options.timeout, stack).await
+            }
+            _ => Err(ConformanceError::Options(
+                "unknown local model configuration case".to_owned(),
+            )),
+        };
+        append_model_config_case(report, options, name, result);
+    }
+}
+
+pub(super) async fn append_draft_cases(
+    report: &mut Report,
+    target: &str,
+    options: &RunOptions,
+    stack: &LocalStack,
+) {
+    for name in [
+        "draft-send-lifecycle",
+        "response-part-ordering",
+        "draft-model-only",
+        "conversation-history",
+    ] {
+        let result = if suite::case_selected(&options.selected_cases, name) {
+            match name {
+                "draft-send-lifecycle" => {
+                    drafts::draft_send_lifecycle(target, options.timeout).await
+                }
+                "response-part-ordering" => {
+                    drafts::response_part_ordering(
+                        target,
+                        options.timeout,
+                        &stack.selected_workspace,
+                    )
+                    .await
+                }
+                "draft-model-only" => drafts::draft_model_only(target, options.timeout).await,
+                "conversation-history" => {
+                    drafts::conversation_history(target, options.timeout).await
+                }
+                _ => Err(ConformanceError::Options(
+                    "unknown local chat draft case".to_owned(),
+                )),
+            }
+        } else {
+            Ok(String::new())
+        };
+        append_draft_case(report, options, name, result);
     }
 }
 
@@ -148,6 +190,16 @@ pub(super) async fn append_restart_cases(
         );
     } else {
         append_model_config_case(report, options, "session-model-restart", Ok(String::new()));
+    }
+    if suite::case_selected(&options.selected_cases, "chat-drafts") {
+        append_draft_case(
+            report,
+            options,
+            "chat-drafts",
+            drafts::chat_drafts(stack, options.timeout).await,
+        );
+    } else {
+        append_draft_case(report, options, "chat-drafts", Ok(String::new()));
     }
 }
 
@@ -240,26 +292,47 @@ fn append_fixture_case(
             "not selected",
         ));
     }
+}
 
-    fn append_model_config_case(
-        report: &mut Report,
-        options: &RunOptions,
-        name: &'static str,
-        result: Result<String, ConformanceError>,
-    ) {
-        if suite::case_selected(&options.selected_cases, name) {
-            report.cases.push(suite::case_result(
-                name,
-                CaseScope::LocalFixtureModelConfiguration,
-                result,
-            ));
-        } else {
-            report.cases.push(suite::skipped(
-                name,
-                CaseScope::LocalFixtureModelConfiguration,
-                "not selected",
-            ));
-        }
+fn append_model_config_case(
+    report: &mut Report,
+    options: &RunOptions,
+    name: &'static str,
+    result: Result<String, ConformanceError>,
+) {
+    if suite::case_selected(&options.selected_cases, name) {
+        report.cases.push(suite::case_result(
+            name,
+            CaseScope::LocalFixtureModelConfiguration,
+            result,
+        ));
+    } else {
+        report.cases.push(suite::skipped(
+            name,
+            CaseScope::LocalFixtureModelConfiguration,
+            "not selected",
+        ));
+    }
+}
+
+fn append_draft_case(
+    report: &mut Report,
+    options: &RunOptions,
+    name: &'static str,
+    result: Result<String, ConformanceError>,
+) {
+    if suite::case_selected(&options.selected_cases, name) {
+        report.cases.push(suite::case_result(
+            name,
+            CaseScope::LocalFixtureChatDrafts,
+            result,
+        ));
+    } else {
+        report.cases.push(suite::skipped(
+            name,
+            CaseScope::LocalFixtureChatDrafts,
+            "not selected",
+        ));
     }
 }
 

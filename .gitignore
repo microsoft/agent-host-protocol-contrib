@@ -3,3 +3,4 @@
 *.redb-lock
 child.pid
 .ahp-samples/
+.ahp-conformance/

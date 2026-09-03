@@ -20,20 +20,43 @@ impl RedbHostStore {
         &self,
         request: FinishTurn,
     ) -> Result<CommittedTransition<i64>, StoreError> {
-        let (chat_uri, turn_id, state, error, origin) = match request {
-            FinishTurn::Complete { chat, turn_id } => {
-                (chat, turn_id, PersistedTurnState::Complete, None, None)
-            }
+        let (chat_uri, turn_id, state, error, origin, model_cursor) = match request {
+            FinishTurn::Complete {
+                chat,
+                turn_id,
+                model_cursor,
+            } => (
+                chat,
+                turn_id,
+                PersistedTurnState::Complete,
+                None,
+                None,
+                Some(model_cursor),
+            ),
             FinishTurn::Cancelled {
                 chat,
                 turn_id,
                 origin,
-            } => (chat, turn_id, PersistedTurnState::Cancelled, None, origin),
+            } => (
+                chat,
+                turn_id,
+                PersistedTurnState::Cancelled,
+                None,
+                origin,
+                None,
+            ),
             FinishTurn::Error {
                 chat,
                 turn_id,
                 error,
-            } => (chat, turn_id, PersistedTurnState::Error, Some(error), None),
+            } => (
+                chat,
+                turn_id,
+                PersistedTurnState::Error,
+                Some(error),
+                None,
+                None,
+            ),
         };
         self.commit_transition(move |write| {
             let mut chat = owned_chat(write, &chat_uri)?;
@@ -53,6 +76,9 @@ impl RedbHostStore {
             let mut parts = active.response_parts;
             if state != PersistedTurnState::Complete {
                 terminalize_incomplete_tool_calls(&mut parts, "Tool call was interrupted.");
+            }
+            if let Some(model_cursor) = model_cursor {
+                chat.model_cursor = model_cursor;
             }
             chat.turns.push(PersistedTurn {
                 id: active.id,

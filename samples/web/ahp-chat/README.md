@@ -10,7 +10,13 @@ automations, and attachments are not.
 ## Run locally
 
 ```powershell
-cd samples\web\ahp-chat
+Set-Location samples/web/ahp-chat
+npm install
+npm run dev
+```
+
+```bash
+cd samples/web/ahp-chat
 npm install
 npm run dev
 ```
@@ -28,6 +34,12 @@ origin instead. Host-served production builds are same-origin and need no
 override.
 
 ```powershell
+npm test
+npm run lint
+npm run build
+```
+
+```bash
 npm test
 npm run lint
 npm run build
@@ -57,20 +69,23 @@ allow” is a host-side persisted setting for the exact command string, not ever
 invocation of that executable. Shell commands run on the host and their working
 directory is not a sandbox.
 
-## Models and reasoning
+## Chat drafts, models, and reasoning
 
-The new-session form uses the root snapshot's advertised model catalogue; model
-names, IDs, and reasoning-level labels come from the host rather than this
-client. It resolves the session configuration with `resolveSessionConfig`
-before creating the session, passing the selected `values.model` object in
-`createSession.config` and the workspace in `workingDirectories`.
+Sessions are created with only their optional workspace. The model picker lives
+beside the chat input, using the root snapshot's advertised model catalogue and
+per-model reasoning schema; names, IDs, labels, and descriptions come from the
+host. Changing a model or reasoning level updates that chat's draft, not the
+session configuration.
 
-The composer displays the selected session default and lets you change it when
-no turn is active. A change dispatches `session/configChanged` with
-`{ config: { model: { id, config? } } }`; the picker waits for the host's action
-or snapshot before showing the new value. **Model default** omits
-`thinkingLevel`. Each turn start also carries the authoritative session model,
-and its model/reasoning setting is shown beneath the historic user message.
+Draft text and its model selection are shared, persisted `ChatState.draft`
+state. The UI debounces `chat/draftChanged` while typing, restores authoritative
+drafts after reconnecting or switching chats, and flushes the latest draft
+before `chat/turnStarted`. Draft messages include a sample-specific expected-turn
+value in `Message._meta`; the sample host strips it before persistence and
+rejects stale writes after another client starts a turn. The current session
+default or a valid locally remembered selection seeds a new empty chat. The
+renderer specializes `thinkingLevel` while preserving other primitive model
+configuration fields.
 
 ## Choosing the WebSocket URL
 
@@ -96,7 +111,12 @@ For example, a static host can place this before the Vite bundle:
 `initialize` with the package's `SUPPORTED_PROTOCOL_VERSIONS`, and attaches the
 root subscription before the handshake. `AhpService` keeps protocol command and
 action names in `src/ahp`, fetches the session catalogue, and selects/subscribes
-to session and chat resources on demand.
+to session and chat resources on demand. Its client ID is stored in
+`sessionStorage`: it survives reconnects and reloads in one tab, but is distinct
+from IDs in other tabs. Before connecting, a short `BroadcastChannel` claim
+detects duplicated opener-tab storage and rotates the duplicate's candidate.
+If channel or storage support is unavailable, the client uses a page-lifetime
+in-memory ID to avoid a collision; that fallback does not persist across reloads.
 
 `AhpStore` uses the SDK's `AhpStateMirror` for root/session state and the SDK's
 pure `chatReducer` for chat actions. It projects those internal protocol states

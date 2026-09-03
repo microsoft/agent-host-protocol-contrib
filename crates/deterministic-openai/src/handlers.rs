@@ -1,4 +1,4 @@
-//! Endpoint handlers and deterministic v1/v2 response selection.
+//! Endpoint handlers and deterministic v1/v2/v3 response selection.
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
@@ -15,6 +15,7 @@ use super::response::{fixture_error, invalid_directive, invalid_request};
 use super::responses_stream;
 use super::v1::FixtureSpec;
 use super::v2::{self, V2Action, V2FixtureSpec};
+use super::v3;
 use super::{
     FixtureState, ObservedApi, ObservedRequest, CHAT_COMPLETION_ID, RESPONSES_ID,
     V2_CHAT_COMPLETION_ID, V2_RESPONSES_ID,
@@ -29,6 +30,17 @@ pub(super) async fn chat_completions(
         Err(response) => return *response,
     };
     observe_request(&state, ObservedApi::ChatCompletions, &request);
+    if v3::has_marker(&request.last_user_content) {
+        let response = match v3::previous_response(&request) {
+            Ok(response) => response,
+            Err(error) => return contract_error(error),
+        };
+        return if request.stream {
+            chat_stream::text(CHAT_COMPLETION_ID, vec![response], 0)
+        } else {
+            nonstream::chat_text(CHAT_COMPLETION_ID, response, 0)
+        };
+    }
     if v2::has_marker(&request.last_user_content) {
         return v2_chat_response(request);
     }
@@ -66,6 +78,17 @@ pub(super) async fn responses(
         Err(response) => return *response,
     };
     observe_request(&state, ObservedApi::Responses, &request);
+    if v3::has_marker(&request.last_user_content) {
+        let response = match v3::previous_response(&request) {
+            Ok(response) => response,
+            Err(error) => return contract_error(error),
+        };
+        return if request.stream {
+            responses_stream::text(RESPONSES_ID, vec![response], 0)
+        } else {
+            nonstream::responses_text(RESPONSES_ID, response, 0)
+        };
+    }
     if v2::has_marker(&request.last_user_content) {
         return v2_responses_response(request);
     }
@@ -196,4 +219,12 @@ fn split_for_incremental_output(value: &str) -> Vec<String> {
 
 fn upstream_error(status: StatusCode, message: &str) -> Response {
     fixture_error(status, code::UPSTREAM, message, "mock_upstream_error")
+}
+
+fn contract_error(error: ContractError) -> Response {
+    if error.code == code::INVALID_REQUEST {
+        invalid_request(error)
+    } else {
+        invalid_directive(error)
+    }
 }

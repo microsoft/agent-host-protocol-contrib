@@ -31,10 +31,10 @@ fn supports_model_specific_thinking_levels() {
         .expect("valid thinking levels");
     let catalog = ModelCatalog {
         models: vec![alpha, beta],
-        default_selection: ModelSelection {
+        default_selection: Some(ModelSelection {
             id: "alpha".into(),
             config: None,
-        },
+        }),
     };
     assert!(catalog.validate().is_ok());
     assert!(catalog
@@ -65,13 +65,13 @@ fn resolves_defaults_and_partial_values() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     assert_eq!(
         catalog.resolve(Some(&partial)),
-        Ok(ModelSelection {
+        Ok(Some(ModelSelection {
             id: "gpt-test".into(),
             config: Some(std::collections::HashMap::from([(
                 "thinkingLevel".into(),
                 json!("medium")
             )])),
-        })
+        }))
     );
     Ok(())
 }
@@ -88,4 +88,35 @@ fn rejects_invalid_selection() -> Result<(), String> {
         Err(ModelCatalogError::UnknownModel("missing".into()))
     );
     Ok(())
+}
+
+#[test]
+fn a_catalogue_without_a_default_requires_a_model_without_inventing_one() {
+    let catalog = ModelCatalog::new([("alpha", "Alpha")]);
+    assert!(catalog.validate().is_ok());
+    assert_eq!(catalog.default_selection, None);
+    assert_eq!(catalog.resolve(None), Ok(None));
+    assert_eq!(
+        catalog.require_selection(None),
+        Err(ModelCatalogError::MissingSelection)
+    );
+
+    let schema = catalog.session_config_schema();
+    assert_eq!(schema.required, Some(vec!["model".into()]));
+    assert_eq!(
+        schema
+            .properties
+            .get("model")
+            .and_then(|model| model.default.as_ref()),
+        None
+    );
+    assert_eq!(
+        catalog.resolve(Some(
+            &serde_json::from_value(json!({
+                "model": { "config": { "thinkingLevel": "medium" } }
+            }))
+            .expect("valid config object")
+        )),
+        Ok(None)
+    );
 }

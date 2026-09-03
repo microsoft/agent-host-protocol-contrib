@@ -1,6 +1,8 @@
 mod common;
 
 use std::fs;
+#[cfg(windows)]
+use std::path::PathBuf;
 
 use common::TestDir;
 use workspace_agent_tools::{
@@ -15,11 +17,41 @@ fn canonical_file_uri_round_trips_on_this_platform() -> Result<(), Box<dyn std::
     let uri = canonical_file_uri(root.path())?;
     assert_eq!(canonical_path(&file_uri_path(&uri)?)?, canonical);
     assert_eq!(canonical_file_uri_path(&uri)?, canonical);
-    #[cfg(windows)]
-    assert!(uri.starts_with("file:///"));
-    #[cfg(unix)]
     assert!(uri.starts_with("file:///"));
     Ok(())
+}
+
+#[test]
+fn file_uri_path_rejects_non_path_components() {
+    for uri in ["file:///workspace?query", "file:///workspace#fragment"] {
+        assert!(matches!(
+            file_uri_path(uri),
+            Err(WorkspaceError::InvalidFileUri)
+        ));
+    }
+    assert!(matches!(
+        file_uri_path("https://example.test/workspace"),
+        Err(WorkspaceError::NonFileUri)
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn file_uri_path_accepts_unc_paths_on_windows() -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(
+        file_uri_path("file://server/share/workspace")?,
+        PathBuf::from(r"\\server\share\workspace")
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn file_uri_path_rejects_windows_unc_paths_on_unix() {
+    assert!(matches!(
+        file_uri_path("file://server/share/workspace"),
+        Err(WorkspaceError::InvalidFileUri)
+    ));
 }
 
 #[test]

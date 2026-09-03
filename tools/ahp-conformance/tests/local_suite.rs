@@ -21,6 +21,6 @@ async fn deterministic_stack_passes_the_local_suite() -> Result<(), Box<dyn std:
     )
     .await?;
     assert!(!report.failed(), "{}", report.render());
-    assert_eq!(report.case_count(), 23);
+    assert_eq!(report.case_count(), 28);
     Ok(())
 }

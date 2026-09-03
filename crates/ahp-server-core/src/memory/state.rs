@@ -7,12 +7,13 @@ use std::collections::{BTreeMap, HashSet};
 
 use ahp_types::actions::ActionEnvelope;
 use ahp_types::common::Uri;
-use ahp_types::state::{ErrorInfo, Message, ResponsePart, ToolCallState, TurnState};
+use ahp_types::state::{ErrorInfo, Message, ResponsePart, ToolCallState, Turn, TurnState};
 use chrono::{SecondsFormat, Utc};
 use workspace_agent_tools::ExactCommandApproval;
 
 use super::{Draft, REPLAY_LIMIT};
 use crate::store::{StoreConflict, StoreError};
+use crate::ModelCursor;
 
 #[derive(Clone)]
 pub(super) struct Data {
@@ -44,7 +45,7 @@ pub(super) struct Session {
     pub(super) workspace: Uri,
     pub(super) created_at: String,
     pub(super) ready: bool,
-    pub(super) model_selection: ahp_types::state::ModelSelection,
+    pub(super) model_selection: Option<ahp_types::state::ModelSelection>,
     pub(super) chats: Vec<Uri>,
 }
 
@@ -54,7 +55,7 @@ impl Session {
         provider: String,
         workspace: Uri,
         created_at: String,
-        model_selection: ahp_types::state::ModelSelection,
+        model_selection: Option<ahp_types::state::ModelSelection>,
     ) -> Self {
         Self {
             uri,
@@ -75,6 +76,8 @@ pub(super) struct Chat {
     pub(super) modified_at: String,
     pub(super) turns: Vec<StoredTurn>,
     pub(super) active: Option<Active>,
+    pub(super) draft: Option<Message>,
+    pub(super) model_cursor: Option<ModelCursor>,
 }
 
 impl Chat {
@@ -85,6 +88,8 @@ impl Chat {
             modified_at: timestamp,
             turns: Vec::new(),
             active: None,
+            draft: None,
+            model_cursor: None,
         }
     }
 }
@@ -122,6 +127,21 @@ pub(super) struct StoredTurn {
     pub(super) response_parts: Vec<ResponsePart>,
     pub(super) state: TurnState,
     pub(super) error: Option<ErrorInfo>,
+}
+
+impl StoredTurn {
+    pub(super) fn snapshot(&self) -> Turn {
+        Turn {
+            id: self.id.clone(),
+            started_at: Some(self.started_at.clone()),
+            duration: Some(self.duration),
+            message: self.message.clone(),
+            response_parts: self.response_parts.clone(),
+            usage: None,
+            state: self.state,
+            error: self.error.clone(),
+        }
+    }
 }
 
 impl Data {

@@ -11,9 +11,17 @@ pub async fn collect_stream(mut stream: ModelEventStream) -> Result<ModelReply, 
     let mut text = String::new();
     let mut saw_text = false;
     let mut calls = BTreeMap::<usize, CollectedCall>::new();
+    let mut response_id = None;
     let mut completed = false;
     while let Some(event) = stream.next().await {
         match event? {
+            ModelStreamEvent::ResponseStarted { id } => {
+                if response_id.replace(id).is_some() {
+                    return Err(ModelError::InvalidResponse(
+                        "stream identified its response more than once".to_owned(),
+                    ));
+                }
+            }
             ModelStreamEvent::TextDelta(delta) => {
                 saw_text = true;
                 text.push_str(&delta);
@@ -65,6 +73,7 @@ pub async fn collect_stream(mut stream: ModelEventStream) -> Result<ModelReply, 
     Ok(ModelReply {
         content: (saw_text || tool_calls.is_empty()).then_some(text),
         tool_calls,
+        response_id,
     })
 }
 

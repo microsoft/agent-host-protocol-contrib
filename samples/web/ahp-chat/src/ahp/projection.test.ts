@@ -8,7 +8,7 @@ import {
 } from "@microsoft/agent-host-protocol"
 import { describe, expect, it } from "vitest"
 
-import { projectChat } from "./projection"
+import { projectChat, visibleResponseParts } from "./projection"
 import { AhpStore } from "./store"
 
 const baseChat: ChatState = {
@@ -136,5 +136,115 @@ describe("chat projection", () => {
         ],
       },
     })
+    expect(visibleResponseParts(parts ?? []).map((part) => part.kind)).toEqual([
+      ResponsePartKind.Markdown,
+      ResponsePartKind.ToolCall,
+      ResponsePartKind.Markdown,
+    ])
+  })
+  it("keeps tools between markdown while skipping empty compatibility parts", () => {
+    const started = chatReducer(baseChat, {
+      type: ActionType.ChatTurnStarted,
+      turnId: "turn-1",
+      startedAt: "2026-08-28T00:00:01.000Z",
+      message: { text: "Hello", origin: { kind: MessageKind.User } },
+    })
+    const empty = chatReducer(started, {
+      type: ActionType.ChatResponsePart,
+      turnId: "turn-1",
+      part: { kind: ResponsePartKind.Markdown, id: "empty", content: "" },
+    })
+    const tool = chatReducer(empty, {
+      type: ActionType.ChatToolCallStart,
+      turnId: "turn-1",
+      toolCallId: "shell-1",
+      toolName: "run_shell",
+      displayName: "Run shell",
+    })
+    const final = chatReducer(tool, {
+      type: ActionType.ChatResponsePart,
+      turnId: "turn-1",
+      part: { kind: ResponsePartKind.Markdown, id: "final", content: "Done" },
+    })
+
+    const parts = projectChat(final).activeTurn?.responseParts ?? []
+    expect(parts.map((part) => part.kind)).toEqual([
+      ResponsePartKind.Markdown,
+      ResponsePartKind.ToolCall,
+      ResponsePartKind.Markdown,
+    ])
+    expect(visibleResponseParts(parts).map((part) => part.kind)).toEqual([
+      ResponsePartKind.ToolCall,
+      ResponsePartKind.Markdown,
+    ])
+  })
+
+  it("projects and freezes a shared draft including unknown model config", () => {
+    const store = new AhpStore()
+    const chat: ChatState = {
+      ...baseChat,
+      draft: {
+        text: "Shared text",
+        origin: { kind: MessageKind.User },
+        model: { id: "gpt-example", config: { thinkingLevel: "medium", contextSize: 200_000 } },
+      },
+    }
+    store.applySnapshot({ resource: chat.resource, state: chat, fromSeq: 1 })
+    store.setSelection(undefined, chat.resource)
+
+    const draft = store.getSnapshot().selectedChat?.draft
+    expect(draft).toEqual({
+      text: "Shared text",
+      model: { id: "gpt-example", config: { thinkingLevel: "medium", contextSize: 200_000 } },
+    })
+    expect(Object.isFrozen(draft)).toBe(true)
+    expect(Object.isFrozen(draft?.model?.config)).toBe(true)
+  })
+
+  it("applies authoritative draft changes and clears only when the host clears it", () => {
+    const store = new AhpStore()
+    store.applySnapshot({ resource: baseChat.resource, state: baseChat, fromSeq: 0 })
+    store.setSelection(undefined, baseChat.resource)
+    const draft = {
+      text: "Remote draft",
+      origin: { kind: MessageKind.User },
+      model: { id: "gpt-example", config: { contextSize: 200_000 } },
+    }
+    store.applyEvent({
+      type: "action",
+      params: {
+        channel: baseChat.resource,
+        serverSeq: 1,
+        origin: { clientId: "other-client", clientSeq: 1 },
+        action: { type: ActionType.ChatDraftChanged, draft },
+      },
+    })
+    expect(store.getSnapshot().selectedChat?.draft).toMatchObject({ text: "Remote draft", model: draft.model })
+    store.applyEvent({
+      type: "action",
+      params: {
+        channel: baseChat.resource,
+        serverSeq: 2,
+        origin: { clientId: "local-client", clientSeq: 1 },
+        action: {
+          type: ActionType.ChatTurnStarted,
+          turnId: "rejected",
+          startedAt: "2026-08-28T00:00:01.000Z",
+          message: draft,
+        },
+        rejectionReason: "Model unavailable",
+      },
+    })
+    expect(store.getSnapshot().selectedChat?.draft?.text).toBe("Remote draft")
+    store.applyEvent({
+      type: "action",
+      params: {
+        channel: baseChat.resource,
+        serverSeq: 3,
+        origin: { clientId: "other-client", clientSeq: 2 },
+        action: { type: ActionType.ChatDraftChanged },
+      },
+    })
+    expect(store.getSnapshot().selectedChat?.draft).toBeUndefined()
   })
 })

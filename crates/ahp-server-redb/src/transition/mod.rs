@@ -1,6 +1,8 @@
 //! Shared validation and session-summary drafting for state transitions.
 
 mod chat;
+mod draft;
+mod response;
 mod terminal;
 mod tool;
 

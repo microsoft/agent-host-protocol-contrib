@@ -101,13 +101,14 @@ async fn shell_does_not_wait_for_a_retained_pipe_after_parent_exit(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = TestDir::new("shell-pipe")?;
     let (tools, workspace) = workspace_tools(root.path())?;
+    let retained_marker = root.path().join("retained-child.txt");
     #[cfg(windows)]
     let command = {
         fs::write(
             root.path().join("retain-pipe.ps1"),
             "$psi = [System.Diagnostics.ProcessStartInfo]::new()\n\
              $psi.FileName = 'cmd.exe'\n\
-             $psi.Arguments = '/D /S /C ping -n 10 127.0.0.1'\n\
+             $psi.Arguments = '/D /S /C ping -n 3 127.0.0.1 > NUL & echo leaked > retained-child.txt'\n\
              $psi.UseShellExecute = $false\n\
              [System.Diagnostics.Process]::Start($psi) | Out-Null\n\
              Write-Output done",
@@ -115,7 +116,7 @@ async fn shell_does_not_wait_for_a_retained_pipe_after_parent_exit(
         "powershell.exe -NoProfile -File retain-pipe.ps1"
     };
     #[cfg(unix)]
-    let command = "sleep 5 & echo done";
+    let command = "(sleep 2; printf leaked > retained-child.txt) & echo done";
     let prepared = tools.preflight(
         &workspace,
         ToolInvocation::run_shell(serde_json::json!({ "command": command }).to_string()),
@@ -125,6 +126,11 @@ async fn shell_does_not_wait_for_a_retained_pipe_after_parent_exit(
     let outcome = tools.execute(&workspace, prepared, &live, &live).await;
     assert!(matches!(outcome, ExecutionOutcome::Completed(_)));
     assert!(started.elapsed() < Duration::from_secs(4));
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(
+        !retained_marker.exists(),
+        "a descendant outlived the completed shell invocation"
+    );
     Ok(())
 }
 
@@ -193,7 +199,7 @@ fn process_exists(pid: u32) -> Result<bool, std::io::Error> {
         ])
         .status()?;
     #[cfg(unix)]
-    let status = Command::new("sh")
+    let status = Command::new("/bin/sh")
         .args(["-c", &format!("kill -0 {pid} 2>/dev/null")])
         .status()?;
     Ok(status.success())

@@ -1,5 +1,6 @@
 //! Persisted records and conversions to AHP state values.
 
+use ahp_server_core::ModelCursor;
 use ahp_types::common::Uri;
 use ahp_types::state::{
     ActiveTurn, ChatSummary, ErrorInfo, MarkdownResponsePart, Message, ModelSelection,
@@ -44,6 +45,10 @@ pub(crate) struct PersistedChat {
     pub(crate) turns: Vec<PersistedTurn>,
     #[serde(default)]
     pub(crate) active: Option<ActiveRecord>,
+    #[serde(default)]
+    pub(crate) draft: Option<Message>,
+    #[serde(default)]
+    pub(crate) model_cursor: Option<ModelCursor>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

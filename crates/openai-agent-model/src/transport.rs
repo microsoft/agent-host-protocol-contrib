@@ -109,7 +109,7 @@ async fn send(
         .client
         .post(client.endpoints.url(api))
         .header(ACCEPT, "text/event-stream")
-        .json(&request_json(api, &client.config.model, request)?);
+        .json(&request_json(api, client.config.model.as_deref(), request)?);
     if let Some(api_key) = &client.config.api_key {
         builder = builder.bearer_auth(api_key);
     }

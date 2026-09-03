@@ -1,19 +1,21 @@
 use std::time::Duration;
 
 use ahp_types::SUPPORTED_PROTOCOL_VERSIONS;
-use serde_json::{json, Value};
+use serde_json::json;
 use uuid::Uuid;
 
 use super::super::advanced::fixture_prompt;
 use super::super::local_stack::LocalStack;
 use super::super::{ConformanceError, Probe};
 use super::helpers::{
-    assert_action_model, assert_fixture_request, assert_historical_model, assert_session_config,
-    chat_state, complete_turn, create_session, model_selection, require_result, session_config,
-    session_state, FAST_MODEL, REASONING_MODEL,
+    assert_session_config, chat_state, create_session, model_selection, require_result,
+    session_config, session_state, FAST_MODEL, REASONING_MODEL,
+};
+use super::turns::{
+    assert_action_model, assert_fixture_request, assert_historical_model, complete_turn,
 };
 
-pub(super) async fn session_model_default(
+pub(in super::super) async fn session_model_default(
     target: &str,
     timeout: Duration,
     stack: &LocalStack,
@@ -54,7 +56,7 @@ pub(super) async fn session_model_default(
     Ok("persists a resolved session model and applies it to model-less turns".into())
 }
 
-pub(super) async fn message_model_override(
+pub(in super::super) async fn message_model_override(
     target: &str,
     timeout: Duration,
     stack: &LocalStack,

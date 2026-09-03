@@ -24,7 +24,8 @@ async fn frequent_chunks_can_outlive_the_idle_timeout_without_a_total_deadline(
         idle: Duration::from_millis(80),
     };
     let client = OpenAiModel::new(
-        ModelConfig::new(format!("http://{address}"), "test")
+        ModelConfig::new(format!("http://{address}"))
+            .with_default_model("test")
             .with_api(ModelApi::Responses)
             .with_timeouts(timeouts),
     )?;
@@ -42,7 +43,8 @@ async fn a_silent_stream_returns_a_typed_idle_timeout() -> Result<(), Box<dyn st
     let address = start_server(Router::new().route("/v1/responses", post(silent_stream))).await?;
     let idle = Duration::from_millis(30);
     let client = OpenAiModel::new(
-        ModelConfig::new(format!("http://{address}"), "test")
+        ModelConfig::new(format!("http://{address}"))
+            .with_default_model("test")
             .with_api(ModelApi::Responses)
             .with_timeouts(StreamTimeouts {
                 connect: Duration::from_secs(1),
@@ -64,7 +66,8 @@ async fn initial_header_wait_is_bounded_by_the_connect_timeout(
     let address = start_server(Router::new().route("/v1/responses", post(delayed_headers))).await?;
     let connect = Duration::from_millis(30);
     let client = OpenAiModel::new(
-        ModelConfig::new(format!("http://{address}"), "test")
+        ModelConfig::new(format!("http://{address}"))
+            .with_default_model("test")
             .with_api(ModelApi::Responses)
             .with_timeouts(StreamTimeouts {
                 connect,
@@ -84,7 +87,9 @@ async fn a_truncated_stream_is_not_treated_as_completed() -> Result<(), Box<dyn 
     let address =
         start_server(Router::new().route("/v1/responses", post(truncated_stream))).await?;
     let client = OpenAiModel::new(
-        ModelConfig::new(format!("http://{address}"), "test").with_api(ModelApi::Responses),
+        ModelConfig::new(format!("http://{address}"))
+            .with_default_model("test")
+            .with_api(ModelApi::Responses),
     )?;
     let error = client
         .complete_text("x")

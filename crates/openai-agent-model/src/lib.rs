@@ -21,7 +21,7 @@ pub use config::{ModelApi, ModelApiParseError, ModelConfig, StreamTimeouts};
 pub use types::{
     ModelDescriptor, ModelError, ModelEventStream, ModelMessage, ModelReply, ModelRequest,
     ModelSelection, ModelStreamEvent, ModelToolCall, ModelToolDefinition, ReasoningEffort,
-    ReasoningEffortParseError,
+    ReasoningEffortParseError, ResponseContinuation,
 };
 
 #[cfg(test)]

@@ -160,7 +160,7 @@ fn delayed_shell_command(marker: &str) -> String {
     {
         format!("ping 127.0.0.1 -n 3 > NUL & echo cancelled > {marker}")
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
         format!("sleep 2; printf %s cancelled > {marker}")
     }

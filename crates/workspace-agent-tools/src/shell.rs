@@ -1,4 +1,7 @@
 //! Bounded platform-shell execution and exact command approval identity.
+#[cfg(not(any(unix, windows)))]
+compile_error!("workspace-agent-tools supports Unix and Windows targets only");
+
 use std::fmt;
 use std::process::Stdio;
 use std::time::Duration;
@@ -138,7 +141,7 @@ fn executable_token(command: &str) -> Result<String, String> {
     {
         Ok(token.to_ascii_lowercase())
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
         Ok(token.into())
     }
@@ -187,7 +190,7 @@ pub(crate) async fn execute(
     tokio::pin!(timer);
     let wait_result = {
         // Group waits include descendants, so wait for the leader here. This permits
-        // the bounded pipe drain below; dropping `child` still terminates its group.
+        // the bounded pipe drain below before terminating any remaining group members.
         let wait = child.inner().wait();
         tokio::pin!(wait);
         tokio::select! {
@@ -201,6 +204,9 @@ pub(crate) async fn execute(
     match wait_result {
         WaitResult::Status(Ok(status)) => {
             finish_capture(stdout_task, stderr_task).await;
+            // A shell can exit while a descendant retains one of its pipes. Do not
+            // let that descendant outlive this tool invocation.
+            kill_child(&mut child).await;
             ShellExecution::Completed(status_result(status, &capture))
         }
         WaitResult::Status(Err(error)) => {
@@ -236,15 +242,17 @@ enum WaitResult {
 fn platform_shell_command(command: &str) -> Command {
     #[cfg(windows)]
     {
-        let mut shell = Command::new("cmd.exe");
+        let executable = std::env::var_os("ComSpec")
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| "cmd.exe".into());
+        let mut shell = Command::new(executable);
         shell.args(["/D", "/S", "/C", command]);
         shell
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        let shell_path = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
-        let mut shell = Command::new(shell_path);
-        shell.args(["-lc", command]);
+        let mut shell = Command::new("/bin/sh");
+        shell.args(["-c", command]);
         shell
     }
 }

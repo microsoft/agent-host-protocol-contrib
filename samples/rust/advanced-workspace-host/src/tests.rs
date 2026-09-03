@@ -118,10 +118,10 @@ async fn delayed_responses(State(entered): State<Arc<Notify>>) -> StatusCode {
 }
 
 #[test]
-fn catalog_mapping_inserts_default_and_sorts_discovered_models(
+fn catalog_mapping_uses_an_optional_fallback_and_sorts_discovered_models(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let inserted_default = model_catalog(
-        "configured-default",
+        Some("configured-default"),
         vec![
             ModelDescriptor {
                 id: "zeta".into(),
@@ -139,17 +139,26 @@ fn catalog_mapping_inserts_default_and_sorts_discovered_models(
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>(),
-        ["configured-default", "alpha", "zeta"]
+        ["alpha", "configured-default", "zeta"]
     );
-    assert_eq!(inserted_default.default_selection.id, "configured-default");
     assert_eq!(
-        inserted_default.models[0].name, "configured-default",
+        inserted_default
+            .default_selection
+            .as_ref()
+            .map(|selection| selection.id.as_str()),
+        Some("configured-default")
+    );
+    assert_eq!(
+        inserted_default.models[1].name, "configured-default",
         "the identifier is a readable label when discovery has no display name"
     );
-    assert!(inserted_default.models[0].config_schema.is_some());
+    assert!(
+        inserted_default.models[1].config_schema.is_none(),
+        "an unrecognized configured default remains selectable without a guessed capability"
+    );
 
     let sorted_catalog = model_catalog(
-        "middle",
+        Some("middle"),
         vec![
             ModelDescriptor {
                 id: "zeta".into(),
@@ -174,7 +183,7 @@ fn catalog_mapping_inserts_default_and_sorts_discovered_models(
         ["alpha", "middle", "zeta"]
     );
     let fixture_catalog = model_catalog(
-        "fixture-model",
+        Some("fixture-model"),
         vec![
             ModelDescriptor {
                 id: "fixture-reasoning".into(),
@@ -190,7 +199,13 @@ fn catalog_mapping_inserts_default_and_sorts_discovered_models(
             },
         ],
     )?;
-    assert_eq!(fixture_catalog.default_selection.config, None);
+    assert_eq!(
+        fixture_catalog
+            .default_selection
+            .as_ref()
+            .and_then(|selection| selection.config.as_ref()),
+        None
+    );
     let thinking_levels = |model_id: &str| {
         let model = fixture_catalog
             .models
@@ -215,6 +230,46 @@ fn catalog_mapping_inserts_default_and_sorts_discovered_models(
         thinking_levels("fixture-reasoning")?,
         Some(json!(["low", "medium", "high", "xhigh", "max"]))
     );
+    let explicit_capability_catalog = model_catalog(
+        Some("gpt-5.4-mini"),
+        vec![
+            ModelDescriptor {
+                id: "unknown-mini".into(),
+                owned_by: None,
+            },
+            ModelDescriptor {
+                id: "gpt-5.4-mini".into(),
+                owned_by: None,
+            },
+        ],
+    )?;
+    let model_schema = |model_id: &str| {
+        explicit_capability_catalog
+            .models
+            .iter()
+            .find(|model| model.id == model_id)
+            .and_then(|model| model.config_schema.as_ref())
+            .map(serde_json::to_value)
+            .transpose()
+    };
+    assert_eq!(
+        model_schema("gpt-5.4-mini")?
+            .as_ref()
+            .and_then(|schema| schema.pointer("/properties/thinkingLevel/enum")),
+        Some(&json!(["none", "low", "medium", "high", "xhigh"]))
+    );
+    assert!(
+        model_schema("unknown-mini")?.is_none(),
+        "unknown model IDs must not inherit mini-model reasoning capabilities"
+    );
+    let no_default_catalog = model_catalog(
+        None,
+        vec![ModelDescriptor {
+            id: "discovered-model".into(),
+            owned_by: None,
+        }],
+    )?;
+    assert!(no_default_catalog.default_selection.is_none());
     Ok(())
 }
 
@@ -229,7 +284,7 @@ async fn unsupported_model_catalog_route_falls_back_to_the_configured_default(
     let host = AdvancedHost::start(AdvancedHostConfig {
         bind: "127.0.0.1:0".parse()?,
         database_path: artifact.path().join("host.redb"),
-        model: ModelConfig::new(catalog.base_url(), "configured-default"),
+        model: ModelConfig::new(catalog.base_url()).with_default_model("configured-default"),
         discover_models: true,
         workspace_roots: vec![workspace],
         reset_shell_approvals: false,
@@ -243,6 +298,65 @@ async fn unsupported_model_catalog_route_falls_back_to_the_configured_default(
         "Models: 1 available; default configured-default"
     );
     host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn discovered_models_can_require_a_session_selection(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let artifact = Artifact::new("catalog-without-default");
+    let workspace = artifact.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let catalog = CatalogServer::start(
+        StatusCode::OK,
+        json!({"data": [{"id": "zeta"}, {"id": "alpha"}]}),
+    )
+    .await?;
+    let host = AdvancedHost::start(AdvancedHostConfig {
+        bind: "127.0.0.1:0".parse()?,
+        database_path: artifact.path().join("host.redb"),
+        model: ModelConfig::new(catalog.base_url()),
+        discover_models: true,
+        workspace_roots: vec![workspace],
+        reset_shell_approvals: false,
+        chunk_size: 16,
+        allowed_origins: Vec::new(),
+        web_root: None,
+    })
+    .await?;
+    assert_eq!(host.model_summary(), "Models: 2 available; no host default");
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsupported_model_catalog_without_fallback_fails_before_database_creation(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let artifact = Artifact::new("unsupported-catalog-without-default");
+    let workspace = artifact.path().join("workspace");
+    let database = artifact.path().join("host.redb");
+    std::fs::create_dir_all(&workspace)?;
+    let catalog =
+        CatalogServer::start(StatusCode::NOT_FOUND, json!({"error": "unsupported"})).await?;
+    let result = AdvancedHost::start(AdvancedHostConfig {
+        bind: "127.0.0.1:0".parse()?,
+        database_path: database.clone(),
+        model: ModelConfig::new(catalog.base_url()),
+        discover_models: true,
+        workspace_roots: vec![workspace],
+        reset_shell_approvals: false,
+        chunk_size: 16,
+        allowed_origins: Vec::new(),
+        web_root: None,
+    })
+    .await;
+    assert!(matches!(
+        result,
+        Err(AdvancedHostError::ModelCatalogUnavailable {
+            status
+        }) if status == StatusCode::NOT_FOUND.as_u16()
+    ));
+    assert!(!database.exists());
     Ok(())
 }
 
@@ -261,7 +375,7 @@ async fn model_catalog_errors_fail_startup_without_creating_a_database(
     let result = AdvancedHost::start(AdvancedHostConfig {
         bind: "127.0.0.1:0".parse()?,
         database_path: database.clone(),
-        model: ModelConfig::new(catalog.base_url(), "configured-default"),
+        model: ModelConfig::new(catalog.base_url()).with_default_model("configured-default"),
         discover_models: true,
         workspace_roots: vec![workspace],
         reset_shell_approvals: false,
@@ -288,7 +402,7 @@ async fn malformed_model_catalog_fails_startup() -> Result<(), Box<dyn std::erro
     let result = AdvancedHost::start(AdvancedHostConfig {
         bind: "127.0.0.1:0".parse()?,
         database_path: artifact.path().join("host.redb"),
-        model: ModelConfig::new(catalog.base_url(), "configured-default"),
+        model: ModelConfig::new(catalog.base_url()).with_default_model("configured-default"),
         discover_models: true,
         workspace_roots: vec![workspace],
         reset_shell_approvals: false,
@@ -376,7 +490,7 @@ async fn starts_and_stops_on_an_ephemeral_port() -> Result<(), Box<dyn std::erro
     let host = AdvancedHost::start(AdvancedHostConfig {
         bind: "127.0.0.1:0".parse()?,
         database_path: artifact.path().join("host.redb"),
-        model: ModelConfig::new("http://127.0.0.1:9", "test-model"),
+        model: ModelConfig::new("http://127.0.0.1:9").with_default_model("test-model"),
         discover_models: false,
         workspace_roots: vec![workspace],
         reset_shell_approvals: false,
@@ -440,7 +554,9 @@ async fn shutdown_drains_a_delayed_turn_before_releasing_redb(
     let host = AdvancedHost::start(AdvancedHostConfig {
         bind: "127.0.0.1:0".parse()?,
         database_path: database.clone(),
-        model: ModelConfig::new(model.base_url(), "test-model").with_api(ModelApi::Responses),
+        model: ModelConfig::new(model.base_url())
+            .with_default_model("test-model")
+            .with_api(ModelApi::Responses),
         discover_models: true,
         workspace_roots: vec![workspace],
         reset_shell_approvals: false,

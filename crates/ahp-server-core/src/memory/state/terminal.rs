@@ -16,18 +16,34 @@ impl Data {
         &mut self,
         request: FinishTurn,
     ) -> Result<(i64, Vec<Draft>), StoreError> {
-        let (chat_uri, turn_id, terminal, origin) = match request {
-            FinishTurn::Complete { chat, turn_id } => (chat, turn_id, None, None),
+        let (chat_uri, turn_id, terminal, origin, model_cursor) = match request {
+            FinishTurn::Complete {
+                chat,
+                turn_id,
+                model_cursor,
+            } => (chat, turn_id, None, None, Some(model_cursor)),
             FinishTurn::Cancelled {
                 chat,
                 turn_id,
                 origin,
-            } => (chat, turn_id, Some((TurnState::Cancelled, None)), origin),
+            } => (
+                chat,
+                turn_id,
+                Some((TurnState::Cancelled, None)),
+                origin,
+                None,
+            ),
             FinishTurn::Error {
                 chat,
                 turn_id,
                 error,
-            } => (chat, turn_id, Some((TurnState::Error, Some(error))), None),
+            } => (
+                chat,
+                turn_id,
+                Some((TurnState::Error, Some(error))),
+                None,
+                None,
+            ),
         };
         let chat = self.chat_mut(&chat_uri)?;
         let active = chat
@@ -49,6 +65,9 @@ impl Data {
         let mut parts = active.response_parts;
         if state != TurnState::Complete {
             terminalize_tools(&mut parts)?;
+        }
+        if let Some(model_cursor) = model_cursor {
+            chat.model_cursor = model_cursor;
         }
         chat.turns.push(StoredTurn {
             id: active.id,

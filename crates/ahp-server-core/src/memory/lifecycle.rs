@@ -75,7 +75,7 @@ pub(super) fn update_session_config(
     request: UpdateSessionConfig,
 ) -> Result<CommittedTransition<()>, StoreError> {
     store.transact(move |data| {
-        data.session_mut(&request.session)?.model_selection = request.model_selection.clone();
+        data.session_mut(&request.session)?.model_selection = Some(request.model_selection.clone());
         Ok((
             (),
             vec![Draft::action(

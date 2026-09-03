@@ -2,9 +2,11 @@
 
 `openai-agent-model` is a small, reusable Rust adapter for streaming
 OpenAI-compatible model endpoints. Its library name is `openai_agent_model`.
-It accepts a stateful application conversation as `ModelRequest`, but submits
-the complete request on every call, so Responses API tool rounds remain
-stateless.
+It accepts a complete application conversation as `ModelRequest`. By default it
+submits that full request on every call. With
+`ModelConfig::with_response_chaining(true)`, a `ResponseContinuation` sends only
+the new Responses input plus `previous_response_id`; the complete messages stay
+available if automatic API selection falls back to Chat Completions.
 
 ```rust,no_run
 use openai_agent_model::{ModelConfig, OpenAiModel};
@@ -46,9 +48,9 @@ Select an API explicitly with `ModelConfig::with_api` or
 `/chat/completions` implies that API and cannot probe the other endpoint.
 
 Both protocols use real SSE (`stream: true` and `Accept: text/event-stream`).
-The adapter emits text and function-argument deltas, validates terminal
-events, disables parallel tool calls, and cancels the response body when the
-returned `ModelEventStream` is dropped.
+The adapter emits the Responses response ID, text, and function-argument
+deltas, validates terminal events, disables parallel tool calls, and cancels
+the response body when the returned `ModelEventStream` is dropped.
 
 ## Timeouts
 

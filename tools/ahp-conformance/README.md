@@ -8,8 +8,38 @@ cargo run -p ahp-conformance -- --target ws://127.0.0.1:8787/ahp
 cargo run -p ahp-conformance -- --local-fixture --format json
 ```
 
+```bash
+cargo run -p ahp-conformance -- --target ws://127.0.0.1:8787/ahp
+cargo run -p ahp-conformance -- --local-fixture --format json
+```
+
 For `--local-fixture`, the runner starts `deterministic-openai-fixture` and
 `advanced-workspace-host` on ephemeral loopback ports with no web root.
+
+## Authenticated targets
+
+Authenticated WebSocket URLs often contain query credentials. Save one without
+putting it in shell history:
+
+```powershell
+cargo run -p ahp-conformance -- --save-target vscode-local --case negotiation
+cargo run -p ahp-conformance -- --target-profile vscode-local
+```
+
+```bash
+cargo run -p ahp-conformance -- --save-target vscode-local --case negotiation
+cargo run -p ahp-conformance -- --target-profile vscode-local
+```
+
+The first command prompts for the full `ws://` or `wss://` URL with input
+hidden. Profiles are stored in the gitignored
+`.ahp-conformance/targets.json`; Unix permissions are set to `0600`. You may
+also combine `--target` or `AHP_CONFORMANCE_TARGET` with
+`--save-target <name>`. Reports redact URL userinfo and query strings.
+
+Plain `ws://` connections use a bounded, validated one-write HTTP upgrade for
+compatibility with hosts whose upgrade parser is sensitive to fragmented
+handshakes. Secure `wss://` connections use the standard TLS WebSocket client.
 
 The standard cases are:
 
@@ -42,6 +72,17 @@ The standard cases are:
   mutating the session default
 - `session-model-restart` *(local only)* — selected defaults retained across an
   advanced-host/redb restart
+- `chat-drafts` *(local only)* — model-less session creation, multi-client draft
+  sync and replay, causal rejection of stale writes, redb restart persistence,
+  clearing, and draft validation
+- `draft-send-lifecycle` *(local only)* — accepted turns clear their matching
+  draft atomically while rejected turns retain it
+- `response-part-ordering` *(local only)* — a v2 fixture tool call is followed
+  by a distinct, ordered markdown response part in live and replay state
+- `draft-model-only` *(local only)* — an empty-text draft retains its selected
+  model and clears by omitting the draft value
+- `conversation-history` *(local only)* — a second turn receives prior user and
+  assistant messages and can repeat the first assistant response
 - `persistence-restart` *(local only)* — session and completed-turn recovery
 - `responses-streaming` *(local only)* — true upstream text and function-argument
   streaming with an explicit Responses API host
@@ -52,6 +93,8 @@ The standard cases are:
 - `streaming-cancellation` *(local only)* — cancellation after the first upstream
   delta under both explicit API modes
 
+The complete `--local-fixture` suite contains 28 cases.
+
 Each result carries a scope label. `protocol-core` covers handshake and
 JSON-RPC behavior; `text-chat-profile` covers the session/chat streaming
 profile (including `createChat`) exercised by this sample;
@@ -59,8 +102,10 @@ profile (including `createChat`) exercised by this sample;
 assertions; `local-fixture-workspace-tools` covers filesystem-sensitive tool
 probes; `local-fixture-model-streaming` covers explicit API routing and true
 upstream streaming; and `local-fixture-model-configuration` covers discovered
-models plus root, session, and per-message model configuration. All cases
-marked local only require `--local-fixture`.
+models plus root, session, and per-message model configuration; and
+`local-fixture-chat-drafts` covers durable draft state, conversation history,
+and tool-to-text response-part ordering. All cases marked local only require
+`--local-fixture`.
 
 By default model text is not asserted, which makes the standard suite useful
 against a well-behaving real host/model. `--model-checks` enables exact output
@@ -82,6 +127,10 @@ or `501`; explicit `Responses` and `ChatCompletions` modes never fall back.
 The model-configuration probes use the dual fixture's fixed `/v1/models`
 response. The local stack does not inject catalog HTTP status failures; 404,
 405, and 501 fallback remains covered by the advanced-host unit tests.
+
+The v2 fixture produces a tool round followed by its final-text round; it
+cannot model text before a tool in the same round. `response-part-ordering`
+therefore covers the reported tool-to-text ordering regression.
 
 Internally, `runner/suite.rs` selects and reports cases, `basic.rs`, `turns.rs`,
 `advanced.rs`, `model_config/`, and `tools/` own cohesive probe groups, and

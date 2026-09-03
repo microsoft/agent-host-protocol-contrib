@@ -77,6 +77,11 @@ and database migration do not leak into routing or turn logic.
 8. Reject unsupported commands/actions clearly at the appropriate protocol
    boundary. Document the host profile rather than implying an omission is an
    AHP limitation.
+9. When models or provider options are selectable, advertise them through root
+   model metadata and the session-config commands. Persist resolved defaults,
+   validate mutable `session/configChanged` actions, and record the effective
+   `ModelSelection` on each user message rather than hiding selection in a
+   private endpoint setting.
 
 ## Keep the architecture human-scale
 

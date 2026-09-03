@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use ahp_types::common::JsonObject;
 use ahp_types::state::{
-    ModelSelection, SessionConfigPropertySchema, SessionConfigSchema, SessionConfigState,
-    SessionModelInfo,
+    ConfigPropertySchema, ModelSelection, SessionConfigPropertySchema, SessionConfigSchema,
+    SessionConfigState, SessionModelInfo,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -14,8 +14,9 @@ mod descriptors;
 mod schema;
 
 use schema::{
-    model_info, model_selection_properties, selection_value, standard_thinking_levels,
-    thinking_levels_for, valid_thinking_level,
+    model_info, model_selection_properties, selection_value, stable_thinking_property,
+    standard_thinking_levels, thinking_levels_for, thinking_property_for_model,
+    valid_thinking_level,
 };
 
 /// The models available to an AHP host and its default session selection.
@@ -24,7 +25,7 @@ pub struct ModelCatalog {
     /// Models advertised in the root snapshot.
     pub models: Vec<SessionModelInfo>,
     /// Model and optional reasoning preference used when a caller omits one.
-    pub default_selection: ModelSelection,
+    pub default_selection: Option<ModelSelection>,
 }
 
 impl ModelCatalog {
@@ -32,7 +33,8 @@ impl ModelCatalog {
     #[must_use]
     pub fn single(id: impl Into<String>) -> Self {
         let id = id.into();
-        Self::new([(id.clone(), id.clone())], id)
+        Self::new([(id.clone(), id.clone())])
+            .with_default_selection(ModelSelection { id, config: None })
     }
 
     /// Creates a catalogue whose models share the standard thinking-level schema.
@@ -41,7 +43,7 @@ impl ModelCatalog {
     /// directly from discovered models. [`Self::validate`] is called by
     /// [`crate::CoreHost::with_model_catalog`] before it accepts peers.
     #[must_use]
-    pub fn new<I, Id, Name>(models: I, default_id: impl Into<String>) -> Self
+    pub fn new<I, Id, Name>(models: I) -> Self
     where
         I: IntoIterator<Item = (Id, Name)>,
         Id: Into<String>,
@@ -52,10 +54,7 @@ impl ModelCatalog {
                 .into_iter()
                 .map(|(id, name)| Self::model_info(id, name))
                 .collect(),
-            default_selection: ModelSelection {
-                id: default_id.into(),
-                config: None,
-            },
+            default_selection: None,
         }
     }
 
@@ -91,7 +90,7 @@ impl ModelCatalog {
     pub fn with_default_selection(self, default_selection: ModelSelection) -> Self {
         Self {
             models: self.models,
-            default_selection,
+            default_selection: Some(default_selection),
         }
     }
 
@@ -115,14 +114,20 @@ impl ModelCatalog {
                 validate_thinking_levels(&levels)?;
             }
         }
-        self.validate_selection(&self.default_selection)
+        self.default_selection
+            .as_ref()
+            .map_or(Ok(()), |selection| self.validate_selection(selection))
     }
 
-    /// Resolves a partial protocol configuration to its canonical model selection.
+    /// Resolves partial protocol configuration to a canonical model selection.
+    ///
+    /// A catalog without a default returns `Ok(None)` until a model ID is
+    /// supplied. This lets clients obtain the required schema before making a
+    /// selection without silently inventing one.
     pub fn resolve(
         &self,
         values: Option<&JsonObject>,
-    ) -> Result<ModelSelection, ModelCatalogError> {
+    ) -> Result<Option<ModelSelection>, ModelCatalogError> {
         let Some(values) = values else {
             return Ok(self.default_selection.clone());
         };
@@ -139,10 +144,24 @@ impl ModelCatalog {
         let id = match model.get("id") {
             Some(Value::String(id)) => id.clone(),
             Some(_) => return Err(ModelCatalogError::InvalidModel),
-            None => self.default_selection.id.clone(),
+            None => match &self.default_selection {
+                Some(selection) => selection.id.clone(),
+                None => {
+                    self.validate_unselected_config(model.get("config"))?;
+                    return Ok(None);
+                }
+            },
         };
         let config = match model.get("config") {
-            None if id == self.default_selection.id => self.default_selection.config.clone(),
+            None if self
+                .default_selection
+                .as_ref()
+                .is_some_and(|selection| id == selection.id) =>
+            {
+                self.default_selection
+                    .as_ref()
+                    .and_then(|selection| selection.config.clone())
+            }
             None => None,
             Some(Value::Object(config)) if config.is_empty() => None,
             Some(Value::Object(config)) => Some(
@@ -155,7 +174,16 @@ impl ModelCatalog {
         };
         let selection = ModelSelection { id, config };
         self.validate_selection(&selection)?;
-        Ok(selection)
+        Ok(Some(selection))
+    }
+
+    /// Resolves configuration for an operation that requires a selected model.
+    pub fn require_selection(
+        &self,
+        values: Option<&JsonObject>,
+    ) -> Result<ModelSelection, ModelCatalogError> {
+        self.resolve(values)?
+            .ok_or(ModelCatalogError::MissingSelection)
     }
 
     /// Validates a fully resolved selection supplied by a message or store record.
@@ -186,12 +214,29 @@ impl ModelCatalog {
     /// Produces the resolved session schema advertised by config commands and snapshots.
     #[must_use]
     pub fn session_config_schema(&self) -> SessionConfigSchema {
-        self.session_config_schema_for(&self.default_selection)
+        let thinking_property = self.default_selection.as_ref().map_or_else(
+            || stable_thinking_property(&self.models),
+            |selection| thinking_property_for_model(&self.models, &selection.id),
+        );
+        self.session_config_schema_with(thinking_property)
     }
 
     /// Produces a schema whose nested thinking-level values match `selection`.
     #[must_use]
     pub fn session_config_schema_for(&self, selection: &ModelSelection) -> SessionConfigSchema {
+        self.session_config_schema_with(thinking_property_for_model(&self.models, &selection.id))
+    }
+
+    /// Produces a schema that remains valid while the session selects any catalog model.
+    #[must_use]
+    pub fn session_config_schema_stable(&self) -> SessionConfigSchema {
+        self.session_config_schema_with(stable_thinking_property(&self.models))
+    }
+
+    fn session_config_schema_with(
+        &self,
+        thinking_property: Option<ConfigPropertySchema>,
+    ) -> SessionConfigSchema {
         let mut properties = HashMap::new();
         properties.insert(
             "model".into(),
@@ -199,13 +244,13 @@ impl ModelCatalog {
                 r#type: "object".into(),
                 title: "Model".into(),
                 description: Some("The model and its reasoning preference.".into()),
-                default: Some(selection_value(&self.default_selection)),
+                default: self.default_selection.as_ref().map(selection_value),
                 r#enum: None,
                 enum_labels: None,
                 enum_descriptions: None,
                 read_only: None,
                 items: None,
-                properties: Some(model_selection_properties(&self.models, &selection.id)),
+                properties: Some(model_selection_properties(&self.models, thinking_property)),
                 required: Some(vec!["id".into()]),
                 additional_properties: None,
                 enum_dynamic: Some(true),
@@ -229,8 +274,40 @@ impl ModelCatalog {
     #[must_use]
     pub fn session_config_state(&self, selection: &ModelSelection) -> SessionConfigState {
         SessionConfigState {
-            schema: self.session_config_schema_for(selection),
+            schema: self.session_config_schema_stable(),
             values: Self::session_config_values(selection),
+        }
+    }
+
+    /// Projects a selectable, required model schema before a model is selected.
+    #[must_use]
+    pub fn unselected_session_config_state(&self) -> SessionConfigState {
+        SessionConfigState {
+            schema: self.session_config_schema_stable(),
+            values: JsonObject::new(),
+        }
+    }
+
+    fn validate_unselected_config(&self, config: Option<&Value>) -> Result<(), ModelCatalogError> {
+        let Some(config) = config else {
+            return Ok(());
+        };
+        let Value::Object(config) = config else {
+            return Err(ModelCatalogError::InvalidConfig);
+        };
+        if config.is_empty() || config.keys().any(|key| key != "thinkingLevel") {
+            return Err(ModelCatalogError::InvalidConfig);
+        }
+        let Some(Value::String(level)) = config.get("thinkingLevel") else {
+            return Err(ModelCatalogError::InvalidThinkingLevel);
+        };
+        if self.models.iter().any(|model| {
+            thinking_levels_for(model)
+                .is_some_and(|levels| levels.iter().any(|allowed| allowed == level))
+        }) {
+            Ok(())
+        } else {
+            Err(ModelCatalogError::InvalidThinkingLevel)
         }
     }
 }
@@ -250,6 +327,9 @@ fn validate_thinking_levels(levels: &[String]) -> Result<(), ModelCatalogError> 
 /// A malformed model catalogue or model-selection value.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ModelCatalogError {
+    /// An operation that creates or executes a session has no selected model.
+    #[error("a model selection is required because this host has no default model")]
+    MissingSelection,
     /// At least one selectable model is required.
     #[error("model catalogue must contain at least one model")]
     Empty,

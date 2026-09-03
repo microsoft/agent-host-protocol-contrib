@@ -18,6 +18,7 @@ pub(crate) struct FixtureRequest {
 
 pub(crate) enum RequestMessage {
     User(String),
+    Assistant(String),
     Tool(ToolResult),
     Other,
 }
@@ -85,6 +86,17 @@ impl FixtureRequest {
             .iter()
             .filter_map(|message| match message {
                 RequestMessage::Tool(result) => Some(result),
+                _ => None,
+            })
+    }
+
+    pub(crate) fn previous_assistant_content(&self) -> Option<&str> {
+        let end = self.last_user_index?;
+        self.messages[..end]
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                RequestMessage::Assistant(content) => Some(content.as_str()),
                 _ => None,
             })
     }

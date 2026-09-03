@@ -21,21 +21,26 @@ pub(super) struct Args {
     /// redb database path. Defaults to the demo-specific database with --demo.
     #[arg(long, env = "AHP_DATABASE")]
     database: Option<PathBuf>,
-    /// OpenAI-compatible host, /v1 path, or complete endpoint. Defaults to api.openai.com.
-    #[arg(
-        long,
-        env = "OPENAI_BASE_URL",
-        default_value = "https://api.openai.com"
-    )]
-    openai_base_url: String,
-    /// Model identifier sent with each streamed completion request.
-    #[arg(long, env = "OPENAI_MODEL", required_unless_present = "demo")]
+    /// OpenAI-compatible host, /v1 path, or complete endpoint; omit to use api.openai.com, which requires `--openai-api-key`.
+    #[arg(long, env = "OPENAI_BASE_URL")]
+    openai_base_url: Option<String>,
+    /// Optional fallback model and catalog default.
+    #[arg(long, env = "OPENAI_MODEL")]
     openai_model: Option<String>,
     /// Use only `--openai-model` rather than querying the endpoint's `/v1/models` catalog.
-    #[arg(long, env = "AHP_NO_DISCOVER_MODELS", conflicts_with = "demo")]
+    #[arg(
+        long,
+        env = "AHP_NO_DISCOVER_MODELS",
+        conflicts_with = "demo",
+        requires = "openai_model"
+    )]
     no_discover_models: bool,
-    /// Optional bearer API key.
-    #[arg(long, env = "OPENAI_API_KEY")]
+    /// Bearer API key; required when the production base URL is implied.
+    #[arg(
+        long,
+        env = "OPENAI_API_KEY",
+        required_unless_present_any = ["openai_base_url", "demo"]
+    )]
     openai_api_key: Option<String>,
     /// Endpoint protocol; auto falls back only after initial Responses 404/405/501.
     #[arg(long, env = "OPENAI_API", value_enum, default_value_t = OpenAiApi::Auto)]
@@ -95,18 +100,51 @@ impl From<OpenAiApi> for ModelApi {
 }
 
 impl Args {
-    fn model_config(&self) -> Result<ModelConfig, std::io::Error> {
-        let model_name = self.openai_model.clone().ok_or_else(|| {
-            std::io::Error::new(
+    fn validate(&self) -> Result<(), std::io::Error> {
+        if !self.demo
+            && self.openai_base_url.is_none()
+            && self
+                .openai_api_key
+                .as_deref()
+                .is_none_or(|key| key.trim().is_empty())
+        {
+            return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "--openai-model is required unless --demo is used",
-            )
-        })?;
-        Ok(self.apply_model_options(ModelConfig::new(self.openai_base_url.clone(), model_name)))
+                "an OpenAI API key is required when --openai-base-url is omitted; set OPENAI_API_KEY or pass --openai-api-key",
+            ));
+        }
+        if self.no_discover_models
+            && self
+                .openai_model
+                .as_deref()
+                .is_none_or(|model| model.trim().is_empty())
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "--no-discover-models requires --openai-model",
+            ));
+        }
+        Ok(())
+    }
+
+    fn model_config(&self) -> ModelConfig {
+        let response_chaining = self.openai_base_url.is_none();
+        let model = ModelConfig::new(
+            self.openai_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com".to_owned()),
+        )
+        .with_response_chaining(response_chaining);
+        let model = match self.openai_model.clone() {
+            Some(model_name) => model.with_default_model(model_name),
+            None => model,
+        };
+        self.apply_model_options(model)
     }
 
     pub(super) fn fixture_model_config(&self, base_url: String) -> ModelConfig {
-        ModelConfig::new(base_url, "fixture-model")
+        ModelConfig::new(base_url)
+            .with_default_model("fixture-model")
             .with_api(ModelApi::Auto)
             .with_timeouts(StreamTimeouts {
                 connect: Duration::from_secs(self.connect_timeout_seconds.get()),
@@ -150,10 +188,11 @@ impl Args {
 /// Parses the standard host CLI, starts the selected host, and waits for Ctrl-C.
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    args.validate()?;
     if args.demo {
         return demo::run(args).await;
     }
-    let model = args.model_config()?;
+    let model = args.model_config();
     let web_root = (!args.no_web).then_some(args.web_root.clone());
     let host = AdvancedHost::start(args.host_config(model, web_root)).await?;
     run_host(host, None).await
@@ -197,15 +236,15 @@ pub(super) fn location_lines(
 }
 
 fn default_database(demo: bool) -> PathBuf {
-    if demo {
-        PathBuf::from(".ahp-samples\\advanced-demo.redb")
-    } else {
-        PathBuf::from(".ahp-samples\\advanced.redb")
-    }
+    let file_name = ["advanced.redb", "advanced-demo.redb"][usize::from(demo)];
+    PathBuf::from(".ahp-samples").join(file_name)
 }
 
 fn default_web_root() -> PathBuf {
-    PathBuf::from("samples\\web\\ahp-chat\\dist")
+    PathBuf::from("samples")
+        .join("web")
+        .join("ahp-chat")
+        .join("dist")
 }
 
 #[cfg(test)]

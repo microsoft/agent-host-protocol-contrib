@@ -2,7 +2,7 @@ import { Bot, CircleAlert, UserRound } from "lucide-react"
 
 import { ResponsePartKind, type URI } from "@microsoft/agent-host-protocol"
 
-import type { ChatView } from "@/ahp/projection"
+import { visibleResponseParts, type ChatView } from "@/ahp/projection"
 import type { ConversationPartView, ToolConfirmationOptionView } from "@/ahp/projection-types"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import {
@@ -67,6 +67,7 @@ function ConversationItem({
   workspace?: URI
   onConfirmToolCall: ConversationProps["onConfirmToolCall"]
 }) {
+  const responseParts = visibleResponseParts(turn.responseParts)
   return (
     <div className="space-y-3">
       <Message align="end">
@@ -87,9 +88,9 @@ function ConversationItem({
         <MessageAvatar><Bot className="size-4" /></MessageAvatar>
         <MessageContent>
           <MessageHeader>Agent</MessageHeader>
-          {turn.responseParts.length ? (
+          {responseParts.length ? (
             <div className="space-y-2">
-              {turn.responseParts.map((part, index) => (
+              {responseParts.map((part, index) => (
                 <ResponsePart
                   key={part.kind === ResponsePartKind.ToolCall ? part.tool.toolCallId : `${part.kind}-${index}`}
                   part={part}

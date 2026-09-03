@@ -15,7 +15,7 @@ const MISSING_FRONTEND_PAGE: &str = r#"<!doctype html>
     <h1>AHP chat frontend is not built</h1>
     <p>The AHP WebSocket endpoint remains available at <code>/ahp</code>.</p>
     <p>Build the frontend from the repository root:</p>
-    <pre>cd samples\web\ahp-chat
+    <pre>cd samples/web/ahp-chat
 npm ci
 npm run build</pre>
   </body>

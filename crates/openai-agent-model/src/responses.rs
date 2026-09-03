@@ -15,6 +15,7 @@ use crate::{ModelError, ModelStreamEvent};
 pub(crate) struct ResponsesStreamParser {
     calls: BTreeMap<usize, ResponsesToolCall>,
     ids: HashMap<String, usize>,
+    response_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -35,6 +36,7 @@ impl ResponsesStreamParser {
             .ok_or_else(|| invalid("Responses SSE data must be an object"))?;
         let event_type = event_type(&event, object)?;
         match event_type {
+            "response.created" => self.response_started(object, event_type),
             "response.output_text.delta" => {
                 let delta = required_string(object, "delta", event_type)?;
                 Ok(ParsedEvent {
@@ -49,12 +51,42 @@ impl ResponsesStreamParser {
             "response.function_call_arguments.delta" => self.arguments_delta(object),
             "response.function_call_arguments.done" => self.arguments_done(object),
             "response.output_item.done" => self.output_item_done(object),
-            "response.completed" => self.completed(),
+            "response.completed" => self.completed(object),
             "response.failed" | "response.incomplete" | "error" => Err(ModelError::StreamFailed {
                 event: event_type.to_owned(),
                 message: failure_message(object),
             }),
             _ => Ok(empty()),
+        }
+    }
+
+    fn response_started(
+        &mut self,
+        object: &Map<String, Value>,
+        event_type: &str,
+    ) -> Result<ParsedEvent, ModelError> {
+        let Some(response) = object.get("response") else {
+            return Ok(empty());
+        };
+        let response = response
+            .as_object()
+            .ok_or_else(|| invalid(&format!("{event_type}.response must be an object")))?;
+        if !response.contains_key("id") {
+            return Ok(empty());
+        }
+        let id = required_non_empty_string(response, "id", "Responses response")?;
+        match &self.response_id {
+            Some(existing) if existing != &id => {
+                Err(invalid("Responses stream changed its response id"))
+            }
+            Some(_) => Ok(empty()),
+            None => {
+                self.response_id = Some(id.clone());
+                Ok(ParsedEvent {
+                    events: vec![ModelStreamEvent::ResponseStarted { id }],
+                    terminal: false,
+                })
+            }
         }
     }
 
@@ -172,14 +204,16 @@ impl ResponsesStreamParser {
         Ok(empty())
     }
 
-    fn completed(&self) -> Result<ParsedEvent, ModelError> {
+    fn completed(&mut self, object: &Map<String, Value>) -> Result<ParsedEvent, ModelError> {
         if self.calls.values().any(|call| !call.item_done) {
             return Err(invalid(
                 "Responses completed before all function calls had completed lifecycle events",
             ));
         }
+        let mut started = self.response_started(object, "response.completed")?;
+        started.terminal = true;
         Ok(ParsedEvent {
-            events: Vec::new(),
+            events: started.events,
             terminal: true,
         })
     }

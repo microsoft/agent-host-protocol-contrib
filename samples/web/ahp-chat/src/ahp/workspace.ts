@@ -6,6 +6,16 @@ function encodePath(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/")
 }
 
+function normalizeFileUri(value: string): URI {
+  if (!/^file:\/+/i.test(value)) {
+    throw new Error("File URIs must contain an absolute path.")
+  }
+  const uri = new URL(value)
+  if (uri.protocol !== "file:") throw new Error("Workspace must use the file: URI scheme.")
+  if (uri.search || uri.hash) throw new Error("File URIs cannot include a query or fragment.")
+  return uri.href
+}
+
 /**
  * Converts a user-entered absolute local path to a file URI. This only
  * normalizes the value; the connected host remains responsible for validating it.
@@ -15,9 +25,7 @@ export function workspaceInputToFileUri(input: string): URI {
   if (!value) throw new Error("Enter an absolute workspace path or file URI.")
 
   if (/^file:/i.test(value)) {
-    const uri = new URL(value)
-    if (uri.protocol !== "file:") throw new Error("Workspace must use the file: URI scheme.")
-    return uri.href
+    return normalizeFileUri(value)
   }
 
   const windowsDrive = /^([A-Za-z]):[\\/](.*)$/.exec(value)

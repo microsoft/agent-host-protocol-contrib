@@ -5,7 +5,7 @@ use ahp_types::state::MessageKind;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::{confirmation::confirm_tool, model::run_turn, reject};
+use super::{confirmation::confirm_tool, draft::change_draft, model::run_turn, reject};
 use crate::host::{CoreHost, TurnKey};
 use crate::store::{FinishTurn, TurnStart, UpdateSessionConfig};
 
@@ -33,6 +33,7 @@ pub(crate) async fn dispatch_action(host: &CoreHost, peer_id: u64, params: Value
     {
         "chat/turnStarted" => start_turn(host, &channel, action_value, action, origin).await,
         "chat/turnCancelled" => cancel_turn(host, &channel, action_value, action, origin).await,
+        "chat/draftChanged" => change_draft(host, &channel, action_value, action, origin).await,
         "session/configChanged" => {
             change_session_config(host, peer_id, &channel, action_value, action, origin).await
         }
@@ -89,16 +90,36 @@ async fn start_turn(
             return;
         }
     };
-    if let Some(selection) = &start.message.model {
-        if let Err(error) = host.inner.model_catalog.validate_selection(selection) {
-            reject(host, channel.into(), action, origin, error).await;
-            return;
-        }
-    }
     let _guard = host.inner.publish_lock.lock().await;
     if host.inner.shutdown.token().is_cancelled() {
         return;
     }
+    let effective_selection = match start.message.model.clone() {
+        Some(selection) => selection,
+        None => match host
+            .inner
+            .store
+            .model_selection_for_chat(channel, host.inner.model_catalog.default_selection.as_ref())
+        {
+            Ok(selection) => selection,
+            Err(error) => {
+                drop(_guard);
+                reject(host, channel.into(), action, origin, error).await;
+                return;
+            }
+        },
+    };
+    if let Err(error) = host
+        .inner
+        .model_catalog
+        .validate_selection(&effective_selection)
+    {
+        drop(_guard);
+        reject(host, channel.into(), action, origin, error).await;
+        return;
+    }
+    let mut start = start;
+    start.message.model = Some(effective_selection);
     match host.inner.store.start_turn(TurnStart {
         chat: channel.into(),
         action: start,
@@ -184,7 +205,11 @@ async fn change_session_config(
             return;
         }
     };
-    let selection = match host.inner.model_catalog.resolve(Some(&changed.config)) {
+    let selection = match host
+        .inner
+        .model_catalog
+        .require_selection(Some(&changed.config))
+    {
         Ok(selection) => selection,
         Err(error) => {
             reject(host, channel.into(), action, origin, error).await;

@@ -11,7 +11,7 @@ function App() {
   const [address, setAddress] = useState(initialWebSocketUrl)
 
   useEffect(() => () => {
-    void service.disconnect()
+    void service.dispose()
   }, [service])
 
   const showConnection = snapshot.connection.phase === "disconnected"

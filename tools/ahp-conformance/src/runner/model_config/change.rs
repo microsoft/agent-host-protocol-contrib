@@ -7,13 +7,15 @@ use super::super::advanced::fixture_prompt;
 use super::super::local_stack::LocalStack;
 use super::super::{ConformanceError, Probe};
 use super::helpers::{
-    assert_action_model, assert_action_turn, assert_fixture_request, assert_session_config,
-    complete_turn, create_session, dispatch_turn, model_selection, require_result, session_config,
+    assert_session_config, create_session, model_selection, require_result, session_config,
     session_state, FAST_MODEL, REASONING_MODEL,
 };
 use super::session::initialized_probe;
+use super::turns::{
+    assert_action_model, assert_action_turn, assert_fixture_request, complete_turn, dispatch_turn,
+};
 
-pub(super) async fn session_model_change(
+pub(in super::super) async fn session_model_change(
     target: &str,
     timeout: Duration,
     stack: &LocalStack,

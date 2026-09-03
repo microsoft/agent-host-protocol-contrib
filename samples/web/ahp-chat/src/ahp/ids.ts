@@ -1,4 +1,5 @@
-const clientIdKey = "ahp-chat.client-id"
+const tabClientIdKey = "ahp-chat.tab-client-id"
+let inMemoryTabClientId: string | undefined
 
 function uuid(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID()
@@ -13,14 +14,33 @@ export function turnId(): string {
   return `turn-${uuid()}`
 }
 
-export function persistentClientId(): string {
+function nextClientId(): string {
+  return `ahp-chat-${uuid()}`
+}
+
+export function pageClientId(): string {
+  inMemoryTabClientId ??= nextClientId()
+  return inMemoryTabClientId
+}
+
+export function tabClientId(): string {
   try {
-    const existing = window.localStorage.getItem(clientIdKey)
+    const existing = window.sessionStorage.getItem(tabClientIdKey)
     if (existing) return existing
-    const id = `ahp-chat-${uuid()}`
-    window.localStorage.setItem(clientIdKey, id)
+    const id = nextClientId()
+    window.sessionStorage.setItem(tabClientIdKey, id)
     return id
   } catch {
-    return `ahp-chat-${uuid()}`
+    return pageClientId()
+  }
+}
+
+export function rotateTabClientId(): string {
+  try {
+    const id = nextClientId()
+    window.sessionStorage.setItem(tabClientIdKey, id)
+    return id
+  } catch {
+    return pageClientId()
   }
 }

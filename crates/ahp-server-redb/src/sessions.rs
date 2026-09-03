@@ -40,6 +40,8 @@ impl RedbHostStore {
                 modified_at: timestamp.clone(),
                 turns: Vec::new(),
                 active: None,
+                draft: None,
+                model_cursor: None,
             };
             let session = PersistedSession {
                 uri: request.session.clone(),
@@ -50,7 +52,7 @@ impl RedbHostStore {
                 lifecycle: PersistedLifecycle::Creating,
                 chats: vec![request.default_chat],
                 default_chat: Some(chat.uri.clone()),
-                model_selection: Some(request.model_selection),
+                model_selection: request.model_selection,
             };
             let mut session_ids = read_session_ids_from_write(write)?;
             session_ids.push(session.uri.clone());
@@ -132,6 +134,8 @@ impl RedbHostStore {
                 modified_at: timestamp,
                 turns: Vec::new(),
                 active: None,
+                draft: None,
+                model_cursor: None,
             };
             session.chats.push(chat.uri.clone());
             write_chat(write, &chat)?;

@@ -26,9 +26,20 @@ pub(in crate::rpc::commands) fn resolve_session_config(
         .model_catalog
         .resolve(request.config.as_ref())
         .map_err(|error| RpcFault::invalid_params(error.to_string()))?;
+    let schema = selection.as_ref().map_or_else(
+        || host.inner.model_catalog.session_config_schema(),
+        |selection| {
+            host.inner
+                .model_catalog
+                .session_config_schema_for(selection)
+        },
+    );
+    let values = selection.map_or_else(ahp_types::common::JsonObject::new, |selection| {
+        crate::ModelCatalog::session_config_values(&selection)
+    });
     Ok(json!({
-        "schema": host.inner.model_catalog.session_config_schema_for(&selection),
-        "values": crate::ModelCatalog::session_config_values(&selection),
+        "schema": schema,
+        "values": values,
     }))
 }
 

@@ -20,8 +20,8 @@ use crate::{CoreConfig, MemoryHostStore, WorkspaceAgentProfile};
 struct NeverModel;
 
 impl AgentModel for NeverModel {
-    fn model_name(&self) -> &str {
-        "test"
+    fn default_model(&self) -> Option<&str> {
+        Some("test")
     }
 
     fn stream<'a>(&'a self, _: &'a ModelRequest) -> ModelRequestFuture<'a> {

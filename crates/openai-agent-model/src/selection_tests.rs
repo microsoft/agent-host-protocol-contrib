@@ -94,10 +94,12 @@ async fn explicit_and_complete_endpoint_selection_never_probes(
     let address = start_server(app(state.clone())).await?;
     let full_chat_endpoint = format!("http://{address}/v1/chat/completions");
     let client = OpenAiModel::new(
-        ModelConfig::new(full_chat_endpoint, "test").with_api(ModelApi::Responses),
+        ModelConfig::new(full_chat_endpoint)
+            .with_default_model("test")
+            .with_api(ModelApi::Responses),
     )?;
     let model: &dyn AgentModel = &client;
-    assert_eq!(model.model_name(), "test");
+    assert_eq!(model.default_model(), Some("test"));
     assert_eq!(client.complete_text("x").await?, "chat");
     assert_eq!(state.responses.load(Ordering::Relaxed), 0);
     assert_eq!(state.chat.load(Ordering::Relaxed), 1);
@@ -144,8 +146,36 @@ async fn rejects_an_empty_per_request_model_before_dispatching_http(
     Ok(())
 }
 
+#[tokio::test]
+async fn selected_requests_work_without_a_configured_default_model(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = TestState::new(StatusCode::OK);
+    let address = start_server(app(state.clone())).await?;
+    let client = OpenAiModel::new(
+        ModelConfig::new(format!("http://{address}")).with_api(ModelApi::Responses),
+    )?;
+
+    let reply = client
+        .complete(&ModelRequest::text("x").with_model_selection(ModelSelection::new("selected")))
+        .await?;
+    assert_eq!(reply.content.as_deref(), Some("responses"));
+    assert_eq!(state.responses.load(Ordering::Relaxed), 1);
+
+    let error = match client.stream(&ModelRequest::text("x")).await {
+        Ok(_) => return Err("a request without a selection must fail before HTTP".into()),
+        Err(error) => error,
+    };
+    assert!(matches!(error, ModelError::MissingModel));
+    assert_eq!(state.responses.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
 fn client(address: std::net::SocketAddr, api: ModelApi) -> Result<OpenAiModel, ModelError> {
-    OpenAiModel::new(ModelConfig::new(format!("http://{address}"), "test").with_api(api))
+    OpenAiModel::new(
+        ModelConfig::new(format!("http://{address}"))
+            .with_default_model("test")
+            .with_api(api),
+    )
 }
 
 fn app(state: TestState) -> Router {

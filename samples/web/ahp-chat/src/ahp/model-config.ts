@@ -136,6 +136,16 @@ export function modelSelection(id: string, thinkingLevel?: JsonPrimitive): Model
   return { id, ...(thinkingLevel === undefined ? {} : { config: { thinkingLevel } }) }
 }
 
+export function modelSelectionWithThinking(
+  selection: ModelSelectionView,
+  thinkingLevel?: JsonPrimitive,
+): ModelSelectionView {
+  const config = { ...selection.config }
+  if (thinkingLevel === undefined) delete config.thinkingLevel
+  else config.thinkingLevel = thinkingLevel
+  return { id: selection.id, ...(Object.keys(config).length ? { config } : {}) }
+}
+
 export function toModelSelection(selection: ModelSelectionView): ModelSelection {
   return { id: selection.id, ...(selection.config ? { config: { ...selection.config } } : {}) }
 }
@@ -147,12 +157,9 @@ export function modelById(models: readonly ModelView[], id?: string): ModelView 
 export function isAvailableModelSelection(models: readonly ModelView[], selection?: ModelSelectionView): boolean {
   if (!selection) return false
   const model = modelById(models, selection.id)
-  if (!model || !selection.config) return Boolean(model)
-  const configuredKeys = Object.keys(selection.config)
+  if (!model || selection.config?.thinkingLevel === undefined) return Boolean(model)
   const reasoning = reasoningConfig(model)
-  return configuredKeys.length === 1
-    && configuredKeys[0] === "thinkingLevel"
-    && Boolean(reasoning?.options.some((option) => Object.is(option.value, selection.config?.thinkingLevel)))
+  return Boolean(reasoning?.options.some((option) => Object.is(option.value, selection.config?.thinkingLevel)))
 }
 
 export function reasoningConfig(model?: ModelView): ReasoningConfig | undefined {

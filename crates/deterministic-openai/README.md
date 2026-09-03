@@ -19,7 +19,11 @@ fixture.shutdown().await?;
 Build or test it without the parent workspace:
 
 ```powershell
-cargo test --manifest-path crates\deterministic-openai\Cargo.toml
+cargo test --manifest-path crates/deterministic-openai/Cargo.toml
+```
+
+```bash
+cargo test --manifest-path crates/deterministic-openai/Cargo.toml
 ```
 
 ## API
@@ -53,7 +57,7 @@ validated as OpenAI wire values: Responses accepts
 `"reasoning":{"effort":"..."}` and Chat Completions accepts a top-level
 `"reasoning_effort":"..."`, where the effort is one of `none`, `minimal`,
 `low`, `medium`, `high`, `xhigh`, or `max`. The selected ID never changes the
-fixture's v1/v2 behavior. `RunningFixture::requests()` returns a bounded,
+fixture's v1/v2/v3 behavior. `RunningFixture::requests()` returns a bounded,
 concurrency-safe snapshot of successful requests as `ObservedRequest` values
 containing `api`, `model`, and `reasoning_effort`.
 
@@ -99,6 +103,19 @@ include completed results after the directive-bearing user message before the
 next call or final text is emitted. Tool arguments are canonical JSON with
 object keys sorted.
 
+### v3 conversation history
+
+```text
+[AHP-TEST v3]
+Repeat the previous assistant response exactly.
+[/AHP-TEST]
+```
+
+v3 requires a prior assistant text message before the directive-bearing user
+message and returns that text verbatim. This checks that a host supplies durable
+chat history to each new upstream request. The wording is intentionally usable
+with an ordinary model as well as the deterministic fixture.
+
 ## Streaming behavior
 
 Chat emits deterministic `chat.completion.chunk` text or function-call
@@ -120,6 +137,6 @@ output.
 
 **Audience:** adapter and integration-test authors who need stable
 OpenAI-shaped HTTP/SSE behavior. Start at `src/lib.rs` and use the immutable
-v1/v2 contracts above; next read the
+v1/v2/v3 contracts above; next read the
 [CLI guide](../../tools/deterministic-openai/README.md) or the
 [conformance runner](../../tools/ahp-conformance/README.md).

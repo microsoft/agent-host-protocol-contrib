@@ -7,6 +7,18 @@ use crate::{ModelError, ModelStreamEvent};
 #[test]
 fn emits_and_validates_function_call_lifecycle() -> Result<(), String> {
     let mut parser = ResponsesStreamParser::default();
+    let started = parser
+        .parse(event(
+            "response.created",
+            json!({"response": {"id": "response-1"}}),
+        ))
+        .map_err(|error| error.to_string())?;
+    assert_eq!(
+        started.events,
+        [ModelStreamEvent::ResponseStarted {
+            id: "response-1".to_owned()
+        }]
+    );
     let added = parser
         .parse(event(
             "response.output_item.added",
@@ -48,7 +60,10 @@ fn emits_and_validates_function_call_lifecycle() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     assert!(
         parser
-            .parse(event("response.completed", json!({"response": {"id":"r"}})))
+            .parse(event(
+                "response.completed",
+                json!({"response": {"id":"response-1"}}),
+            ))
             .map_err(|error| error.to_string())?
             .terminal
     );

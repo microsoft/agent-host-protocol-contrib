@@ -81,10 +81,9 @@ fn parse_item(
             "user" => Ok(RequestMessage::User(
                 required_string(object, "content", &format!("input[{index}].content"))?.to_owned(),
             )),
-            "assistant" => {
-                required_string(object, "content", &format!("input[{index}].content"))?;
-                Ok(RequestMessage::Other)
-            }
+            "assistant" => Ok(RequestMessage::Assistant(
+                required_string(object, "content", &format!("input[{index}].content"))?.to_owned(),
+            )),
             _ => Ok(RequestMessage::Other),
         },
     }

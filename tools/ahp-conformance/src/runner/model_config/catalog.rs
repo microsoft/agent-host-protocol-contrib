@@ -1,18 +1,19 @@
 use std::collections::HashSet;
+use std::path::Path;
 use std::time::Duration;
 
 use ahp_types::SUPPORTED_PROTOCOL_VERSIONS;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::super::tools::workspace::file_uri;
 use super::super::{ConformanceError, Probe};
 use super::helpers::{
     model_selection, require_error, require_result, DEFAULT_MODEL, FAST_MODEL, REASONING_MODEL,
 };
+use super::schema::assert_thinking_schema;
 
-const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-pub(super) async fn model_catalog(
+pub(in super::super) async fn model_catalog(
     target: &str,
     timeout: Duration,
 ) -> Result<String, ConformanceError> {
@@ -79,9 +80,10 @@ pub(super) async fn model_catalog(
     Ok("discovers the deterministic OpenAI catalog with model-specific reasoning schemas".into())
 }
 
-pub(super) async fn session_model_config(
+pub(in super::super) async fn session_model_config(
     target: &str,
     timeout: Duration,
+    workspace_root: &Path,
 ) -> Result<String, ConformanceError> {
     let mut probe = Probe::connect(target, timeout).await?;
     probe
@@ -109,6 +111,8 @@ pub(super) async fn session_model_config(
         )
         .await?;
     assert_resolved(&resolved, &selected)?;
+    let missing_workspace =
+        file_uri(&workspace_root.join(format!("missing-workspace-{}", Uuid::new_v4())))?;
     for (label, params) in [
         (
             "unknown model",
@@ -132,7 +136,7 @@ pub(super) async fn session_model_config(
             "invalid workspace",
             json!({
                 "channel": "ahp-root://",
-                "workingDirectory": "file:///C:/missing-ahp-conformance-workspace",
+                "workingDirectory": missing_workspace,
             }),
         ),
     ] {
@@ -180,51 +184,6 @@ pub(super) async fn session_model_config(
     Ok("resolves canonical model config, validates contexts, and filters typed completions".into())
 }
 
-fn assert_thinking_schema(
-    model: &Value,
-    id: &str,
-    expected_levels: &[&str],
-) -> Result<(), ConformanceError> {
-    let property = model
-        .pointer("/configSchema/properties/thinkingLevel")
-        .and_then(Value::as_object)
-        .ok_or_else(|| ConformanceError::Options(format!("{id:?} lacks thinkingLevel schema")))?;
-    let values = string_array(property.get("enum"), id, "enum")?;
-    if values != expected_levels {
-        return Err(ConformanceError::Options(format!(
-            "{id:?} thinking-level enum was {values:?}, expected {expected_levels:?}"
-        )));
-    }
-    if values.iter().any(|value| !EFFORTS.contains(value)) {
-        return Err(ConformanceError::Options(format!(
-            "{id:?} advertised an unsupported reasoning effort"
-        )));
-    }
-    for field in ["enumLabels", "enumDescriptions"] {
-        let metadata = string_array(property.get(field), id, field)?;
-        if metadata.len() != values.len() || metadata.iter().any(|value| value.is_empty()) {
-            return Err(ConformanceError::Options(format!(
-                "{id:?} {field} is not aligned with its enum"
-            )));
-        }
-    }
-    if property.get("type").and_then(Value::as_str) != Some("string")
-        || property
-            .get("title")
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-        || property
-            .get("description")
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-    {
-        return Err(ConformanceError::Options(format!(
-            "{id:?} thinkingLevel schema is not production-shaped"
-        )));
-    }
-    Ok(())
-}
-
 fn assert_resolved(reply: &Value, expected: &Value) -> Result<(), ConformanceError> {
     let result = require_result(reply, "resolveSessionConfig")?;
     if result.pointer("/values/model") != Some(expected) {
@@ -240,9 +199,12 @@ fn assert_resolved(reply: &Value, expected: &Value) -> Result<(), ConformanceErr
     if model.get("type").and_then(Value::as_str) != Some("object")
         || model.get("sessionMutable").and_then(Value::as_bool) != Some(true)
         || model
-            .pointer("/properties/id/enum")
+            .get("properties")
+            .and_then(|properties| properties.get("id"))
+            .and_then(|id| id.get("enum"))
             .and_then(Value::as_array)
             .is_none()
+        || !schema_supports_expected_thinking(model, expected)
     {
         return Err(ConformanceError::Options(
             "resolveSessionConfig returned an incomplete model schema".into(),
@@ -251,22 +213,23 @@ fn assert_resolved(reply: &Value, expected: &Value) -> Result<(), ConformanceErr
     Ok(())
 }
 
-fn string_array<'a>(
-    value: Option<&'a Value>,
-    id: &str,
-    field: &str,
-) -> Result<Vec<&'a str>, ConformanceError> {
-    value
-        .and_then(Value::as_array)
-        .ok_or_else(|| ConformanceError::Options(format!("{id:?} lacks {field}")))
-        .and_then(|values| {
-            values
-                .iter()
-                .map(|value| {
-                    value.as_str().ok_or_else(|| {
-                        ConformanceError::Options(format!("{id:?} {field} has a non-string value"))
-                    })
-                })
-                .collect()
-        })
+fn schema_supports_expected_thinking(
+    model: &serde_json::Map<String, Value>,
+    expected: &Value,
+) -> bool {
+    let thinking = model
+        .get("properties")
+        .and_then(|properties| properties.get("config"))
+        .and_then(|config| config.get("properties"))
+        .and_then(|properties| properties.get("thinkingLevel"))
+        .and_then(|thinking| thinking.get("enum"))
+        .and_then(Value::as_array);
+    match expected
+        .pointer("/config/thinkingLevel")
+        .and_then(Value::as_str)
+    {
+        Some(expected) => thinking
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(expected))),
+        None => thinking.is_some(),
+    }
 }

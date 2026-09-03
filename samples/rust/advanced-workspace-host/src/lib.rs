@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ahp_server_core::{
-    CoreConfig, CoreHost, CoreHostError, HostStore, ModelCatalog, WorkspaceAgentProfile,
+    ahp_types::state::ModelSelection, CoreConfig, CoreHost, CoreHostError, HostStore, ModelCatalog,
+    WorkspaceAgentProfile,
 };
 use ahp_server_redb::RedbHostStore;
 use ahp_server_ws::{router, WsError, WsOptions};
@@ -69,6 +70,14 @@ pub enum AdvancedHostError {
     /// The durable store could not be opened or reset.
     #[error("redb host store failed: {0}")]
     Store(String),
+    /// The endpoint cannot provide a model catalog and no fallback was configured.
+    #[error(
+        "model discovery is unavailable (HTTP {status}) and no fallback model was provided; use a compatible catalog or --openai-model"
+    )]
+    ModelCatalogUnavailable { status: u16 },
+    /// Discovery was disabled without a model to advertise.
+    #[error("model discovery is disabled but no fallback model was provided; use --openai-model")]
+    MissingFallbackModel,
     /// The HTTP server task did not complete normally.
     #[error("HTTP server task failed: {0}")]
     ServerTask(#[from] JoinError),
@@ -88,10 +97,15 @@ impl AdvancedHost {
             ConfiguredWorkspaces::new(config.workspace_roots)?
         };
         let profile = Arc::new(WorkspaceAgentProfile::new(workspaces));
-        let default_model = config.model.model.clone();
+        let configured_default = config.model.model.clone();
         let model = Arc::new(OpenAiModel::new(config.model)?);
-        let model_catalog =
-            discover_model_catalog(&model, &default_model, config.discover_models).await?;
+        let model_catalog = discover_model_catalog(
+            &model,
+            configured_default.as_deref(),
+            config.discover_models,
+        )
+        .await?;
+        model_catalog.validate().map_err(CoreHostError::from)?;
         create_database_parent(&config.database_path)?;
         let store = Arc::new(
             RedbHostStore::open(&config.database_path)
@@ -103,6 +117,10 @@ impl AdvancedHost {
                 .map_err(|error| AdvancedHostError::Store(error.to_string()))?;
         }
         let model_count = model_catalog.models.len();
+        let default_model = model_catalog
+            .default_selection
+            .as_ref()
+            .map(|selection| selection.id.clone());
         let core = CoreHost::with_model_catalog(
             CoreConfig {
                 server_name: SERVER_NAME.to_owned(),
@@ -156,7 +174,7 @@ pub struct RunningAdvancedHost {
     server: Option<tokio::task::JoinHandle<Result<(), std::io::Error>>>,
     web_status: WebStatus,
     model_count: usize,
-    default_model: String,
+    default_model: Option<String>,
 }
 
 impl RunningAdvancedHost {
@@ -178,13 +196,13 @@ impl RunningAdvancedHost {
         self.web_status
     }
 
-    /// Returns the discovered model count and configured default model identifier.
+    /// Returns the discovered model count and configured host default, if any.
     #[must_use]
     pub fn model_summary(&self) -> String {
-        format!(
-            "Models: {} available; default {}",
-            self.model_count, self.default_model
-        )
+        match &self.default_model {
+            Some(model) => format!("Models: {} available; default {model}", self.model_count),
+            None => format!("Models: {} available; no host default", self.model_count),
+        }
     }
 
     /// Stops the transport, drains active turns, and releases the redb file handle.
@@ -227,84 +245,85 @@ fn create_database_parent(path: &Path) -> Result<(), std::io::Error> {
 
 async fn discover_model_catalog(
     model: &OpenAiModel,
-    default_model: &str,
+    fallback_model: Option<&str>,
     discover_models: bool,
 ) -> Result<ModelCatalog, AdvancedHostError> {
     let descriptors = if discover_models {
         match model.list_models().await {
             Ok(descriptors) => descriptors,
             Err(ModelError::ModelsUnsupported { status, .. }) => {
+                let Some(fallback_model) = fallback_model else {
+                    return Err(AdvancedHostError::ModelCatalogUnavailable {
+                        status: status.as_u16(),
+                    });
+                };
                 eprintln!(
-                    "Model discovery is unavailable (HTTP {status}); using only configured default {default_model}."
+                    "Model discovery is unavailable (HTTP {status}); using only configured default {fallback_model}."
                 );
                 Vec::new()
             }
             Err(error) => return Err(error.into()),
         }
     } else {
+        if fallback_model.is_none() {
+            return Err(AdvancedHostError::MissingFallbackModel);
+        }
         Vec::new()
     };
-    model_catalog(default_model, descriptors)
+    model_catalog(fallback_model, descriptors)
 }
 
 fn model_catalog(
-    default_model: &str,
+    fallback_model: Option<&str>,
     mut descriptors: Vec<ModelDescriptor>,
 ) -> Result<ModelCatalog, AdvancedHostError> {
+    if let Some(fallback_model) = fallback_model.filter(|fallback| {
+        !descriptors
+            .iter()
+            .any(|descriptor| descriptor.id == *fallback)
+    }) {
+        descriptors.push(ModelDescriptor {
+            id: fallback_model.to_owned(),
+            owned_by: None,
+        });
+    }
     descriptors.sort_by(|left, right| {
         left.id
             .cmp(&right.id)
             .then_with(|| left.owned_by.cmp(&right.owned_by))
     });
     descriptors.dedup_by(|left, right| left.id == right.id);
-    if !descriptors
-        .iter()
-        .any(|descriptor| descriptor.id == default_model)
-    {
-        descriptors.insert(
-            0,
-            ModelDescriptor {
-                id: default_model.to_owned(),
-                owned_by: None,
-            },
-        );
-    }
-
-    Ok(ModelCatalog::from_model_descriptors_with_thinking_levels(
-        descriptors,
-        default_model,
-        |descriptor| thinking_levels_for(&descriptor.id).iter().copied(),
-    )
-    .map_err(CoreHostError::from)?)
+    let catalog =
+        ModelCatalog::from_model_descriptors_with_thinking_levels(descriptors, |descriptor| {
+            thinking_levels_for(&descriptor.id).iter().copied()
+        })
+        .map_err(CoreHostError::from)?;
+    Ok(match fallback_model {
+        Some(fallback_model) => catalog.with_default_selection(ModelSelection {
+            id: fallback_model.to_owned(),
+            config: None,
+        }),
+        None => catalog,
+    })
 }
 
 fn thinking_levels_for(model_id: &str) -> &'static [&'static str] {
     const FAST: &[&str] = &["none", "minimal", "low"];
     const GENERAL: &[&str] = &["minimal", "low", "medium", "high"];
-    const ADVANCED: &[&str] = &["low", "medium", "high", "xhigh"];
-    const EXTENDED: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-    const GPT_5_1_OR_5_2: &[&str] = &["none", "minimal", "low", "medium", "high"];
+    const ADVANCED: &[&str] = &["none", "low", "medium", "high", "xhigh"];
+    const CODEX: &[&str] = &["low", "medium", "high", "xhigh"];
+    const EXTENDED: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
+    const FIXTURE_REASONING: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+    const NONE: &[&str] = &[];
 
-    let model_id = model_id.to_ascii_lowercase();
-    if model_id.contains("fixture-fast") || model_id.contains("mini") || model_id.contains("nano") {
-        FAST
-    } else if model_id.contains("fixture-reasoning")
-        || model_id.starts_with("gpt-5.6")
-        || model_id.contains("max")
-    {
-        EXTENDED
-    } else if model_id.starts_with("gpt-5.5")
-        || model_id.starts_with("gpt-5.4")
-        || model_id.starts_with("gpt-5.3")
-        || model_id.starts_with("o1")
-        || model_id.starts_with("o3")
-        || model_id.starts_with("o4")
-    {
-        ADVANCED
-    } else if model_id.starts_with("gpt-5.1") || model_id.starts_with("gpt-5.2") {
-        GPT_5_1_OR_5_2
-    } else {
-        GENERAL
+    match model_id {
+        "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" => EXTENDED,
+        "gpt-5.5" | "gpt-5.4" | "gpt-5.4-mini" => ADVANCED,
+        "gpt-5.3-codex" => CODEX,
+        "fixture-fast" => FAST,
+        "fixture-model" => GENERAL,
+        "fixture-reasoning" => FIXTURE_REASONING,
+        _ => NONE,
     }
 }
 

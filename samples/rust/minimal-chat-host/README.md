@@ -11,32 +11,47 @@ ahp-session:/minimal-chat-host
 ahp-chat:/minimal-chat-host
 ```
 
-It sends one user message to the **OpenAI Responses API** at
-`POST /v1/responses`; there is no Chat Completions mode or fallback.
+It sends the retained chat turns plus the new user message to the **OpenAI
+Responses API** at `POST /v1/responses`; there is no Chat Completions mode or
+fallback.
 
 **Audience:** developers learning their first AHP text-streaming host.
 
 ## Run it
 
-`--openai-base-url` is an API origin, not a `/v1` URL. The host appends
-`/v1/responses` itself.
+With no `--openai-base-url`, the host uses `https://api.openai.com` and requires
+an API key. With no `--openai-model`, it uses `gpt-5.6-luna`. The host appends
+`/v1/responses` to the API origin.
 
 ```powershell
-$env:OPENAI_API_KEY = "<key>" # optional only when the selected endpoint needs it
-cargo run --manifest-path samples\rust\minimal-chat-host\Cargo.toml -- `
-  --openai-base-url https://api.openai.com `
-  --openai-model gpt-4.1-mini
+$env:OPENAI_API_KEY = "<key>"
+cargo run -p minimal-chat-host
 ```
+
+```bash
+OPENAI_API_KEY="<key>" cargo run -p minimal-chat-host
+```
+
+Pass `--openai-base-url` and `--openai-model` to override those defaults. An
+explicit OpenAI-compatible base URL may omit the API key.
 
 For a deterministic local upstream, start the repository fixture in one
 terminal, then this host in another. The sample has no dependency on the
 fixture or its support crate.
 
 ```powershell
-cargo run --manifest-path tools\deterministic-openai\Cargo.toml
+cargo run --manifest-path tools/deterministic-openai/Cargo.toml
 
-cargo run --manifest-path samples\rust\minimal-chat-host\Cargo.toml -- `
+cargo run --manifest-path samples/rust/minimal-chat-host/Cargo.toml -- `
   --openai-base-url http://127.0.0.1:8899 `
+  --openai-model fixture-model
+```
+
+```bash
+cargo run --manifest-path tools/deterministic-openai/Cargo.toml
+
+cargo run --manifest-path samples/rust/minimal-chat-host/Cargo.toml -- \
+  --openai-base-url http://127.0.0.1:8899 \
   --openai-model fixture-model
 ```
 
@@ -120,10 +135,12 @@ AHP client             protocol.rs + host.rs              responses.rs / OpenAI
 
 There is no reconnect or action replay (`reconnect` and every unsupported
 request receive JSON-RPC `MethodNotFound`), session/chat creation or disposal,
-unsubscription, tools, workspaces, shell access, UI/static files, history sent
-to the model, or persistent storage. Each upstream request contains only the
-new user text. The in-memory chat snapshot keeps at most eight finished turns
-until the process exits.
+unsubscription, tools, workspaces, shell access, UI/static files, or persistent
+storage. With the implied production OpenAI endpoint, successful turns retain
+an in-memory `previous_response_id`, so follow-up requests send only the new
+user text. Explicit compatible endpoints instead receive user and assistant
+text from at most eight finished turns followed by the new user text. Either
+form of history exists only until the process exits.
 
 Only one text turn can be active globally. It is deliberately a simple
 best-effort multi-client fanout, with no backpressure policy, authentication,
@@ -151,7 +168,13 @@ subscriptions and reconnect/replay. Do not add tools or static hosting to this
 sample; those are taught by the advanced composition sample.
 
 ```powershell
-cargo fmt --manifest-path samples\rust\minimal-chat-host\Cargo.toml -- --check
-cargo clippy --manifest-path samples\rust\minimal-chat-host\Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path samples\rust\minimal-chat-host\Cargo.toml
+cargo fmt --manifest-path samples/rust/minimal-chat-host/Cargo.toml -- --check
+cargo clippy --manifest-path samples/rust/minimal-chat-host/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path samples/rust/minimal-chat-host/Cargo.toml
+```
+
+```bash
+cargo fmt --manifest-path samples/rust/minimal-chat-host/Cargo.toml -- --check
+cargo clippy --manifest-path samples/rust/minimal-chat-host/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path samples/rust/minimal-chat-host/Cargo.toml
 ```

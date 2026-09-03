@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   modelSelection,
+  modelSelectionWithThinking,
   reasoningConfig,
 } from "./model-config"
 import { AhpStore } from "./store"
@@ -109,6 +110,15 @@ describe("model configuration projection", () => {
     expect(modelSelection("gpt-example", "high")).toEqual({
       id: "gpt-example",
       config: { thinkingLevel: "high" },
+    })
+    const configured = { id: "gpt-example", config: { thinkingLevel: "medium", contextSize: 200_000 } }
+    expect(modelSelectionWithThinking(configured, "high")).toEqual({
+      id: "gpt-example",
+      config: { thinkingLevel: "high", contextSize: 200_000 },
+    })
+    expect(modelSelectionWithThinking(configured)).toEqual({
+      id: "gpt-example",
+      config: { contextSize: 200_000 },
     })
   })
 })

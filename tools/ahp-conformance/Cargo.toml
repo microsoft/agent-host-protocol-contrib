@@ -13,17 +13,21 @@ workspace = true
 [dependencies]
 advanced-workspace-host = { path = "../../samples/rust/advanced-workspace-host" }
 ahp-types.workspace = true
+base64.workspace = true
 clap.workspace = true
 deterministic-openai-fixture = { path = "../../crates/deterministic-openai" }
 futures-util.workspace = true
+httparse.workspace = true
 openai-agent-model = { path = "../../crates/openai-agent-model" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
+url.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
+rpassword.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

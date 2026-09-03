@@ -91,6 +91,56 @@ async fn v1_serves_raw_chat_and_responses_sse_with_full_done_snapshots(
 }
 
 #[tokio::test]
+async fn v3_repeats_prior_assistant_text_for_both_apis() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = start().await?;
+    let client = reqwest::Client::new();
+    let prompt = "[AHP-TEST v3]\nRepeat the previous assistant response exactly.\n[/AHP-TEST]";
+
+    let chat: Value = client
+        .post(chat_endpoint(&fixture))
+        .json(&json!({
+            "model": "fixture-model",
+            "messages": [
+                { "role": "user", "content": "first" },
+                { "role": "assistant", "content": "remembered" },
+                { "role": "user", "content": prompt }
+            ]
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        chat.pointer("/choices/0/message/content"),
+        Some(&json!("remembered"))
+    );
+
+    let response: Value = client
+        .post(responses_endpoint(&fixture))
+        .json(&json!({
+            "model": "fixture-model",
+            "input": [
+                { "role": "user", "content": "first" },
+                { "role": "assistant", "content": "remembered" },
+                { "role": "user", "content": prompt }
+            ]
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        response.pointer("/output/0/content/0/text"),
+        Some(&json!("remembered"))
+    );
+
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn v2_progresses_tools_and_streams_arguments_for_both_apis(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let fixture = start().await?;
@@ -252,7 +302,7 @@ async fn validates_errors_and_chat_only_responses_404() -> Result<(), Box<dyn st
         client
             .post(&endpoint)
             .json(&chat_request(
-                "[AHP-TEST v3]\nRespond exactly with JSON: \"x\"\n[/AHP-TEST]",
+                "[AHP-TEST v4]\nRespond exactly with JSON: \"x\"\n[/AHP-TEST]",
                 false,
             ))
             .send()

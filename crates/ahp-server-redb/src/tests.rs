@@ -65,7 +65,7 @@ fn create_ready(store: &RedbHostStore) -> Result<(Uri, Uri), StoreError> {
         default_chat: chat.clone(),
         provider: "openai".into(),
         workspace: "file:///workspace".into(),
-        model_selection: default_selection(),
+        model_selection: Some(default_selection()),
     })?;
     store.mark_session_ready(MarkSessionReady {
         session: session.clone(),
@@ -74,7 +74,9 @@ fn create_ready(store: &RedbHostStore) -> Result<(Uri, Uri), StoreError> {
 }
 
 fn default_selection() -> ahp_types::state::ModelSelection {
-    ModelCatalog::single("test-model").default_selection
+    ModelCatalog::single("test-model")
+        .default_selection
+        .expect("single catalog has a default")
 }
 
 fn start(turn_id: &str) -> Result<ChatTurnStartedAction, serde_json::Error> {
@@ -306,7 +308,7 @@ fn catalogue_transitions_are_journaled_and_snapshots_are_typed(
         default_chat: chat.clone(),
         provider: "openai".into(),
         workspace: "file:///workspace".into(),
-        model_selection: default_selection(),
+        model_selection: Some(default_selection()),
     })?;
     assert_eq!(created.envelopes.len(), 2);
     assert!(matches!(
@@ -380,11 +382,11 @@ fn turn_transitions_commit_state_journal_origin_and_rejection(
         chat: chat.clone(),
         action: start("turn-1")?,
         origin: origin.clone(),
-        legacy_default_selection: default_selection(),
+        legacy_default_selection: Some(default_selection()),
     })?;
-    assert_eq!(started.envelopes.len(), 3);
+    assert_eq!(started.envelopes.len(), 4);
     assert_eq!(started.envelopes[0].origin, origin);
-    store.append_text(&chat, "turn-1", "Hello ")?;
+    store.append_text(&chat, "turn-1", "response-turn-1", "Hello ")?;
     store.start_tool(
         &chat,
         "turn-1",
@@ -410,6 +412,7 @@ fn turn_transitions_commit_state_journal_origin_and_rejection(
     let finished = store.finish_turn(FinishTurn::Complete {
         chat: chat.clone(),
         turn_id: "turn-1".into(),
+        model_cursor: None,
     })?;
     assert_eq!(finished.envelopes.len(), 2);
     let state = chat_state(store, chat.clone())?;
@@ -450,7 +453,7 @@ fn conflicts_and_invalid_transitions_leave_state_and_journal_unchanged(
         chat: chat.clone(),
         action: start("turn-1")?,
         origin: None,
-        legacy_default_selection: default_selection(),
+        legacy_default_selection: Some(default_selection()),
     })?;
     let before_sequence = store.server_sequence()?;
     let before_state = serde_json::to_value(chat_state(store, chat.clone())?)?;
@@ -459,12 +462,12 @@ fn conflicts_and_invalid_transitions_leave_state_and_journal_unchanged(
             chat: chat.clone(),
             action: start("turn-2")?,
             origin: None,
-            legacy_default_selection: default_selection(),
+            legacy_default_selection: Some(default_selection()),
         }),
         Err(StoreError::Conflict(StoreConflict::ActiveTurn(_)))
     ));
     assert!(matches!(
-        store.append_text(&chat, "wrong-turn", "ignored"),
+        store.append_text(&chat, "wrong-turn", "response-turn-1", "ignored"),
         Err(StoreError::Conflict(StoreConflict::TurnMismatch { .. }))
     ));
     assert!(matches!(
@@ -517,7 +520,9 @@ fn conflicts_and_invalid_transitions_leave_state_and_journal_unchanged(
         }),
         Err(StoreError::Conflict(StoreConflict::InvalidToolState { .. }))
     ));
-    assert!(store.append_text(&chat, "turn-1", "").is_err());
+    assert!(store
+        .append_text(&chat, "turn-1", "response-turn-1", "")
+        .is_err());
     assert_eq!(store.server_sequence()?, after_tool_sequence);
     assert_ne!(before_sequence, after_tool_sequence);
     assert_ne!(
@@ -547,7 +552,7 @@ fn persisted_catalogue_promotes_blocked_and_error_chats_over_a_latest_idle_defau
         chat: blocked_chat.clone(),
         action: start("blocked-turn")?,
         origin: None,
-        legacy_default_selection: default_selection(),
+        legacy_default_selection: Some(default_selection()),
     })?;
     store.start_tool(
         &blocked_chat,
@@ -601,7 +606,7 @@ fn persisted_catalogue_promotes_blocked_and_error_chats_over_a_latest_idle_defau
         chat: error_chat.clone(),
         action: start("error-turn")?,
         origin: None,
-        legacy_default_selection: default_selection(),
+        legacy_default_selection: Some(default_selection()),
     })?;
     store.finish_turn(FinishTurn::Error {
         chat: error_chat.clone(),
@@ -677,7 +682,7 @@ fn restart_recovers_active_turn_and_terminalizes_tools() -> Result<(), Box<dyn s
         chat: chat.clone(),
         action: start("interrupted")?,
         origin: None,
-        legacy_default_selection: default_selection(),
+        legacy_default_selection: Some(default_selection()),
     })?;
     fixture.store().start_tool(
         &chat,
@@ -736,7 +741,7 @@ fn exact_approvals_survive_reopen_without_honoring_legacy_grants(
         chat: chat.clone(),
         action: start("approval-turn")?,
         origin: None,
-        legacy_default_selection: default_selection(),
+        legacy_default_selection: Some(default_selection()),
     })?;
     fixture.store().start_tool(
         &chat,
@@ -775,11 +780,12 @@ fn completed_turn_history_is_limited_to_256_entries() -> Result<(), Box<dyn std:
             chat: chat.clone(),
             action: start(&turn_id)?,
             origin: None,
-            legacy_default_selection: default_selection(),
+            legacy_default_selection: Some(default_selection()),
         })?;
         store.finish_turn(FinishTurn::Complete {
             chat: chat.clone(),
             turn_id,
+            model_cursor: None,
         })?;
     }
     let state = chat_state(store, chat)?;

@@ -6,7 +6,7 @@ import type { ConnectionView } from "./store"
 export interface ConnectionCallbacks {
   onConnection: (connection: ConnectionView) => void
   onSnapshot: (snapshot: Snapshot) => void
-  onEvent: (event: SubscriptionEvent) => void
+  onEvent: (event: SubscriptionEvent, connectionGeneration?: number) => void
   onReconnected: () => void
 }
 

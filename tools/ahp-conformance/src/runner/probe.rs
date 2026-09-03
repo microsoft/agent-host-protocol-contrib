@@ -6,13 +6,21 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use ahp_types::actions::ActionEnvelope;
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::http::header::{ACCEPT, USER_AGENT};
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use url::Url;
 
 use super::ConformanceError;
 
@@ -33,9 +41,11 @@ impl Probe {
         target: &str,
         timeout_duration: Duration,
     ) -> Result<Self, ConformanceError> {
-        let (socket, _) = timeout(timeout_duration, connect_async(target))
-            .await
-            .map_err(|_| ConformanceError::Timeout(format!("connecting to {target}")))??;
+        let socket = if target.starts_with("ws://") {
+            Self::connect_plain(target, timeout_duration).await?
+        } else {
+            Self::connect_standard(target, timeout_duration).await?
+        };
         let (writer, reader) = socket.split();
         Ok(Self {
             writer,
@@ -45,6 +55,152 @@ impl Probe {
             next_client_seq: 1,
             timeout: timeout_duration,
             last_server_seq: None,
+        })
+    }
+
+    async fn connect_standard(
+        target: &str,
+        timeout_duration: Duration,
+    ) -> Result<Ws, ConformanceError> {
+        let mut request = target
+            .into_client_request()
+            .map_err(Self::describe_handshake_error)?;
+        request
+            .headers_mut()
+            .insert(USER_AGENT, HeaderValue::from_static("ahp-conformance/0.1"));
+        request
+            .headers_mut()
+            .insert(ACCEPT, HeaderValue::from_static("*/*"));
+        let (socket, _) = timeout(timeout_duration, connect_async(request))
+            .await
+            .map_err(|_| ConformanceError::Timeout("connecting to WebSocket target".to_owned()))?
+            .map_err(Self::describe_handshake_error)?;
+        Ok(socket)
+    }
+
+    async fn connect_plain(
+        target: &str,
+        timeout_duration: Duration,
+    ) -> Result<Ws, ConformanceError> {
+        timeout(timeout_duration, Self::connect_plain_inner(target))
+            .await
+            .map_err(|_| ConformanceError::Timeout("connecting to WebSocket target".to_owned()))?
+    }
+
+    async fn connect_plain_inner(target: &str) -> Result<Ws, ConformanceError> {
+        const MAX_RESPONSE_HEADER_BYTES: usize = 16 * 1024;
+        let url = Url::parse(target).map_err(|error| {
+            ConformanceError::Options(format!("invalid WebSocket URL: {error}"))
+        })?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| ConformanceError::Options("WebSocket URL has no host".to_owned()))?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| ConformanceError::Options("WebSocket URL has no port".to_owned()))?;
+        let mut stream = TcpStream::connect((host, port)).await?;
+        let key = base64::engine::general_purpose::STANDARD.encode(uuid::Uuid::new_v4().as_bytes());
+        let host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
+        let host_header = url
+            .port()
+            .map_or_else(|| host.clone(), |port| format!("{host}:{port}"));
+        let path = url.query().map_or_else(
+            || url.path().to_owned(),
+            |query| format!("{}?{query}", url.path()),
+        );
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\nUser-Agent: ahp-conformance/0.1\r\nAccept: */*\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await?;
+        stream.flush().await?;
+
+        let mut received = Vec::new();
+        let header_end = loop {
+            let mut chunk = [0_u8; 1024];
+            let count = stream.read(&mut chunk).await?;
+            if count == 0 {
+                return Err(ConformanceError::Closed);
+            }
+            received.extend_from_slice(&chunk[..count]);
+            if let Some(header_end) = bounded_header_end(&received, MAX_RESPONSE_HEADER_BYTES)? {
+                break header_end;
+            }
+        };
+        let mut headers = [httparse::EMPTY_HEADER; 32];
+        let mut response = httparse::Response::new(&mut headers);
+        response.parse(&received[..header_end]).map_err(|error| {
+            ConformanceError::Options(format!("invalid WebSocket handshake response: {error}"))
+        })?;
+        let status = response.code.ok_or_else(|| {
+            ConformanceError::Options("WebSocket handshake response omitted a status".to_owned())
+        })?;
+        if status != 101 {
+            let body = String::from_utf8_lossy(&received[header_end..]);
+            let body = body.trim();
+            return Err(ConformanceError::Options(if body.is_empty() {
+                format!("WebSocket handshake returned HTTP {status}")
+            } else {
+                format!("WebSocket handshake returned HTTP {status}: {body}")
+            }));
+        }
+        Self::validate_upgrade_headers(response.headers, &key)?;
+        let unread = received.split_off(header_end);
+        Ok(WebSocketStream::from_partially_read(
+            MaybeTlsStream::Plain(stream),
+            unread,
+            Role::Client,
+            None,
+        )
+        .await)
+    }
+
+    fn validate_upgrade_headers(
+        headers: &[httparse::Header<'_>],
+        key: &str,
+    ) -> Result<(), ConformanceError> {
+        let has_token = |name: &str, expected: &str| {
+            headers
+                .iter()
+                .filter(|header| header.name.eq_ignore_ascii_case(name))
+                .filter_map(|header| std::str::from_utf8(header.value).ok())
+                .flat_map(|value| value.split(','))
+                .any(|token| token.trim().eq_ignore_ascii_case(expected))
+        };
+        let expected = derive_accept_key(key.as_bytes());
+        let accept = headers
+            .iter()
+            .filter(|header| header.name.eq_ignore_ascii_case("sec-websocket-accept"))
+            .filter_map(|header| std::str::from_utf8(header.value).ok())
+            .any(|value| value.trim() == expected);
+        if has_token("upgrade", "websocket") && has_token("connection", "upgrade") && accept {
+            Ok(())
+        } else {
+            Err(ConformanceError::Options(
+                "WebSocket handshake returned invalid upgrade headers".to_owned(),
+            ))
+        }
+    }
+
+    fn describe_handshake_error(error: tokio_tungstenite::tungstenite::Error) -> ConformanceError {
+        let tokio_tungstenite::tungstenite::Error::Http(response) = error else {
+            return ConformanceError::Transport(error);
+        };
+        let body = response
+            .body()
+            .as_deref()
+            .and_then(|body| std::str::from_utf8(body).ok())
+            .map(str::trim)
+            .filter(|body| !body.is_empty());
+        ConformanceError::Options(match body {
+            Some(body) => format!(
+                "WebSocket handshake returned HTTP {}: {body}",
+                response.status()
+            ),
+            None => format!("WebSocket handshake returned HTTP {}", response.status()),
         })
     }
 
@@ -110,7 +266,12 @@ impl Probe {
         operation: &str,
     ) -> Result<T, ConformanceError> {
         let result = message.get("result").cloned().ok_or_else(|| {
-            ConformanceError::Options(format!("{operation} did not return a JSON-RPC result"))
+            let error = message
+                .get("error")
+                .map_or_else(|| "no error object".to_owned(), Value::to_string);
+            ConformanceError::Options(format!(
+                "{operation} did not return a JSON-RPC result: {error}"
+            ))
         })?;
         serde_json::from_value(result).map_err(ConformanceError::from)
     }
@@ -120,6 +281,16 @@ impl Probe {
         channel: &str,
         action: Value,
     ) -> Result<(), ConformanceError> {
+        self.dispatch_action_with_sequence(channel, action)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn dispatch_action_with_sequence(
+        &mut self,
+        channel: &str,
+        action: Value,
+    ) -> Result<i64, ConformanceError> {
         let client_seq = self.next_client_seq;
         self.next_client_seq = self.next_client_seq.saturating_add(1);
         self.notify(
@@ -130,7 +301,8 @@ impl Probe {
                 "action": action,
             }),
         )
-        .await
+        .await?;
+        Ok(client_seq)
     }
 
     pub(crate) async fn send_text(&mut self, text: &str) -> Result<Value, ConformanceError> {
@@ -350,4 +522,58 @@ fn post_cancel_activity_type<'a>(
         "chat/delta" | "chat/error" | "chat/turnComplete"
     ) || action_type.starts_with("chat/toolCall"))
     .then_some(action_type)
+}
+
+fn bounded_header_end(received: &[u8], maximum: usize) -> Result<Option<usize>, ConformanceError> {
+    let header_end = received
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4);
+    if header_end.is_some_and(|end| end > maximum)
+        || (header_end.is_none() && received.len() >= maximum)
+    {
+        return Err(ConformanceError::Options(
+            "WebSocket handshake response headers exceeded 16 KiB".to_owned(),
+        ));
+    }
+    Ok(header_end)
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::{bounded_header_end, Probe};
+
+    #[test]
+    fn accepts_upgrade_token_split_across_connection_headers() {
+        let headers = [
+            httparse::Header {
+                name: "Upgrade",
+                value: b"websocket",
+            },
+            httparse::Header {
+                name: "Connection",
+                value: b"keep-alive",
+            },
+            httparse::Header {
+                name: "Connection",
+                value: b"Upgrade",
+            },
+            httparse::Header {
+                name: "Sec-WebSocket-Accept",
+                value: b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+            },
+        ];
+        assert!(Probe::validate_upgrade_headers(&headers, "dGhlIHNhbXBsZSBub25jZQ==").is_ok());
+    }
+
+    #[test]
+    fn rejects_a_header_terminator_beyond_the_limit() {
+        let mut oversized = vec![b'a'; 16];
+        oversized.extend_from_slice(b"\r\n\r\n");
+        assert!(bounded_header_end(&oversized, 16).is_err());
+        assert_eq!(
+            bounded_header_end(b"HTTP/1.1 101\r\n\r\nbody", 16).expect("bounded headers"),
+            Some(16)
+        );
+    }
 }

@@ -122,6 +122,10 @@ pub struct ModelRequest {
     pub tools: Vec<ModelToolDefinition>,
     /// Optional model and reasoning-effort override for this request.
     pub model_selection: Option<ModelSelection>,
+    /// Optional Responses API chain cursor and the first message not represented by it.
+    pub response_continuation: Option<ResponseContinuation>,
+    /// Whether the Responses API should retain this response for continuation.
+    pub store_response: bool,
 }
 
 impl ModelRequest {
@@ -133,6 +137,8 @@ impl ModelRequest {
             }],
             tools: Vec::new(),
             model_selection: None,
+            response_continuation: None,
+            store_response: false,
         }
     }
 
@@ -143,9 +149,31 @@ impl ModelRequest {
         self
     }
 
+    /// Continues a stored Responses API chain while retaining full messages for
+    /// a possible Chat Completions fallback.
+    #[must_use]
+    pub fn with_response_continuation(
+        mut self,
+        previous_response_id: impl Into<String>,
+        input_start: usize,
+    ) -> Self {
+        self.response_continuation = Some(ResponseContinuation {
+            previous_response_id: previous_response_id.into(),
+            input_start,
+        });
+        self
+    }
+
+    /// Requests provider-side storage for Responses API continuation.
+    #[must_use]
+    pub const fn with_response_storage(mut self, store: bool) -> Self {
+        self.store_response = store;
+        self
+    }
+
     pub(crate) fn selected_model<'a>(
         &'a self,
-        configured_model: &'a str,
+        configured_model: Option<&'a str>,
     ) -> Result<(&'a str, Option<ReasoningEffort>), ModelError> {
         match &self.model_selection {
             Some(selection) if selection.id.trim().is_empty() => {
@@ -154,9 +182,21 @@ impl ModelRequest {
                 })
             }
             Some(selection) => Ok((&selection.id, selection.reasoning_effort)),
-            None => Ok((configured_model, None)),
+            None => configured_model
+                .filter(|model| !model.trim().is_empty())
+                .map(|model| (model, None))
+                .ok_or(ModelError::MissingModel),
         }
     }
+}
+
+/// Responses API continuation state for one request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseContinuation {
+    /// ID returned by the previous stored OpenAI response.
+    pub previous_response_id: String,
+    /// Index of the first message that is not already represented by the cursor.
+    pub input_start: usize,
 }
 
 /// A conversation item understood by both supported OpenAI APIs.
@@ -230,11 +270,18 @@ pub struct ModelReply {
     pub content: Option<String>,
     /// Function calls requested by the model.
     pub tool_calls: Vec<ModelToolCall>,
+    /// Responses API identifier, when the selected endpoint supplied one.
+    pub response_id: Option<String>,
 }
 
 /// One decoded incremental item from a model stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelStreamEvent {
+    /// A Responses API stream identified the response being created.
+    ResponseStarted {
+        /// Provider response identifier.
+        id: String,
+    },
     /// A piece of assistant text.
     TextDelta(String),
     /// A function call whose identity is now known.
@@ -264,6 +311,11 @@ pub type ModelEventStream =
 /// Failures returned by an OpenAI-compatible endpoint or stream.
 #[derive(Debug, Error)]
 pub enum ModelError {
+    /// Neither this request nor the client configuration selected a model.
+    #[error(
+        "no model was selected; configure a default model or set ModelRequest.model_selection"
+    )]
+    MissingModel,
     /// A configured endpoint cannot form a valid OpenAI endpoint URL.
     #[error("invalid OpenAI base URL {base_url:?}: {reason}")]
     InvalidBaseUrl {

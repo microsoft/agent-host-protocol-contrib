@@ -6,14 +6,12 @@ use crate::{ModelApi, ModelError, ModelMessage, ModelRequest, ModelToolCall, Mod
 
 pub(crate) fn request_json(
     api: ModelApi,
-    configured_model: &str,
+    configured_model: Option<&str>,
     request: &ModelRequest,
 ) -> Result<Value, ModelError> {
     let (model, reasoning_effort) = request.selected_model(configured_model)?;
     match api {
-        ModelApi::Responses | ModelApi::Auto => {
-            Ok(responses_json(model, reasoning_effort, request))
-        }
+        ModelApi::Responses | ModelApi::Auto => responses_json(model, reasoning_effort, request),
         ModelApi::ChatCompletions => Ok(chat_completions_json(model, reasoning_effort, request)),
     }
 }
@@ -49,9 +47,27 @@ fn responses_json(
     model: &str,
     reasoning_effort: Option<crate::ReasoningEffort>,
     request: &ModelRequest,
-) -> Value {
+) -> Result<Value, ModelError> {
     let mut input = Vec::new();
-    for message in &request.messages {
+    let messages = match &request.response_continuation {
+        Some(continuation) => {
+            if continuation.previous_response_id.trim().is_empty() {
+                return Err(ModelError::InvalidResponse(
+                    "Responses continuation id must not be empty".to_owned(),
+                ));
+            }
+            request
+                .messages
+                .get(continuation.input_start..)
+                .ok_or_else(|| {
+                    ModelError::InvalidResponse(
+                        "Responses continuation input_start exceeded the message count".to_owned(),
+                    )
+                })?
+        }
+        None => request.messages.as_slice(),
+    };
+    for message in messages {
         match message {
             ModelMessage::User { content } => {
                 input.push(json!({ "role": "user", "content": content }));
@@ -93,7 +109,16 @@ fn responses_json(
             json!({ "effort": reasoning_effort.as_str() }),
         );
     }
-    Value::Object(object)
+    if let Some(continuation) = &request.response_continuation {
+        object.insert(
+            "previous_response_id".to_owned(),
+            json!(continuation.previous_response_id),
+        );
+    }
+    if request.store_response {
+        object.insert("store".to_owned(), Value::Bool(true));
+    }
+    Ok(Value::Object(object))
 }
 
 fn chat_message_json(message: &ModelMessage) -> Value {

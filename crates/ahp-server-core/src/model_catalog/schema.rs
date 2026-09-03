@@ -77,7 +77,7 @@ pub(super) fn model_info(id: String, name: String, thinking_levels: &[String]) -
 
 pub(super) fn model_selection_properties(
     models: &[SessionModelInfo],
-    selected_model: &str,
+    thinking_property: Option<ConfigPropertySchema>,
 ) -> HashMap<String, ConfigPropertySchema> {
     HashMap::from([
         (
@@ -119,16 +119,37 @@ pub(super) fn model_selection_properties(
                 enum_descriptions: None,
                 read_only: None,
                 items: None,
-                properties: models
-                    .iter()
-                    .find(|model| model.id == selected_model)
-                    .and_then(thinking_property_for)
+                properties: thinking_property
                     .map(|thinking| HashMap::from([("thinkingLevel".into(), Box::new(thinking))])),
                 required: None,
                 additional_properties: None,
             },
         ),
     ])
+}
+
+pub(super) fn thinking_property_for_model(
+    models: &[SessionModelInfo],
+    model_id: &str,
+) -> Option<ConfigPropertySchema> {
+    models
+        .iter()
+        .find(|model| model.id == model_id)
+        .and_then(thinking_property_for)
+}
+
+pub(super) fn stable_thinking_property(
+    models: &[SessionModelInfo],
+) -> Option<ConfigPropertySchema> {
+    let levels = standard_thinking_levels()
+        .into_iter()
+        .filter(|level| {
+            models.iter().any(|model| {
+                thinking_levels_for(model).is_some_and(|supported| supported.contains(level))
+            })
+        })
+        .collect::<Vec<_>>();
+    (!levels.is_empty()).then(|| thinking_property(&levels))
 }
 
 pub(super) fn thinking_levels_for(model: &SessionModelInfo) -> Option<Vec<String>> {
@@ -194,5 +215,13 @@ fn thinking_metadata(value: &str) -> (&'static str, &'static str, &'static str) 
 }
 
 pub(super) fn selection_value(selection: &ModelSelection) -> AnyValue {
-    serde_json::to_value(selection).expect("ModelSelection is serializable")
+    let mut value =
+        serde_json::Map::from_iter([("id".into(), Value::String(selection.id.clone()))]);
+    if let Some(config) = &selection.config {
+        value.insert(
+            "config".into(),
+            Value::Object(serde_json::Map::from_iter(config.clone())),
+        );
+    }
+    Value::Object(value)
 }

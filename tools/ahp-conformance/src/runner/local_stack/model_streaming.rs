@@ -62,7 +62,9 @@ impl LocalStack {
         let config = AdvancedHostConfig {
             bind: host_bind,
             database_path: artifact.join("database").join("mock-host.redb"),
-            model: ModelConfig::new(fixture.base_url(), "fixture-model").with_api(api),
+            model: ModelConfig::new(fixture.base_url())
+                .with_default_model("fixture-model")
+                .with_api(api),
             discover_models: false,
             workspace_roots: vec![workspace_root],
             reset_shell_approvals: false,

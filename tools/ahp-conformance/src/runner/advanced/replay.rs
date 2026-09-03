@@ -101,6 +101,13 @@ pub(super) fn validate_replayed_turn(
                     })?;
                 content.push_str(delta);
             }
+            "chat/usage" => {
+                if !saw_started {
+                    return Err(ConformanceError::Options(format!(
+                        "chat/usage precedes chat/turnStarted for turn {turn_id:?}"
+                    )));
+                }
+            }
             "chat/turnComplete" | "chat/error" => {
                 if !saw_started || response_part_id.is_none() {
                     return Err(ConformanceError::Options(format!(
