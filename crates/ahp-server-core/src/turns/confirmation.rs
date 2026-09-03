@@ -196,9 +196,9 @@ pub(crate) async fn confirm_tool(
                 ToolCallConfirmationReason::Setting
             };
             let canonical =
-                canonical_confirmation(&confirmation, true, Some(reason), None, option_id);
+                canonical_confirmation(&confirmation, true, Some(reason.clone()), None, option_id);
             (
-                presentation.ready_state(reason, Some(option.clone())),
+                presentation.ready_state(reason.clone(), Some(option.clone())),
                 vec![StateAction::ChatToolCallConfirmed(canonical)],
                 ApprovalDecision::Approved {
                     confirmed: reason,
@@ -291,14 +291,16 @@ fn valid_confirmation(value: &ChatToolCallConfirmedAction, option: &str) -> bool
                 && value.reason.is_none()
                 && value
                     .confirmed
-                    .is_none_or(|reason| reason == ToolCallConfirmationReason::UserAction)
+                    .as_ref()
+                    .is_none_or(|reason| *reason == ToolCallConfirmationReason::UserAction)
         }
         "always-allow-command" => {
             value.approved
                 && value.reason.is_none()
                 && value
                     .confirmed
-                    .is_none_or(|reason| reason == ToolCallConfirmationReason::Setting)
+                    .as_ref()
+                    .is_none_or(|reason| *reason == ToolCallConfirmationReason::Setting)
         }
         "deny" => {
             !value.approved

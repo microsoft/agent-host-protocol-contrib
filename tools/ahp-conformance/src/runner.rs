@@ -14,7 +14,7 @@ pub enum OutputFormat {
 }
 
 /// Settings for an observable conformance run.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RunOptions {
     /// WebSocket endpoint. Omit only with [`run_local_suite`].
     pub target: Option<String>,
@@ -24,6 +24,8 @@ pub struct RunOptions {
     pub selected_cases: Vec<String>,
     /// Enables optional exact-output assertions using the documented fixture syntax.
     pub model_checks: bool,
+    /// OAuth bearer token pushed to protected resources advertised by the selected agent.
+    pub auth_token: Option<String>,
     /// Requested report format.
     pub format: OutputFormat,
 }
@@ -88,7 +90,8 @@ impl Report {
             .any(|case| matches!(case.status, CaseStatus::Failed))
     }
 
-    /// Returns the number of selected, passed, failed, or skipped cases reported.
+    /// Returns the number of cases in the report, including skipped or
+    /// not-applicable cases.
     #[must_use]
     pub fn case_count(&self) -> usize {
         self.cases.len()
@@ -158,12 +161,13 @@ impl CaseScope {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum CaseStatus {
     Passed,
     Failed,
     Skipped,
+    NotApplicable,
 }
 
 impl CaseStatus {
@@ -172,7 +176,63 @@ impl CaseStatus {
             Self::Passed => "PASS",
             Self::Failed => "FAIL",
             Self::Skipped => "SKIP",
+            Self::NotApplicable => "N/A",
         }
+    }
+}
+
+pub(super) struct ScenarioCheck {
+    name: &'static str,
+    status: CaseStatus,
+    detail: String,
+}
+
+impl ScenarioCheck {
+    pub(super) fn passed(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            name,
+            status: CaseStatus::Passed,
+            detail: detail.into(),
+        }
+    }
+
+    pub(super) fn failed(name: &'static str, error: impl std::fmt::Display) -> Self {
+        Self {
+            name,
+            status: CaseStatus::Failed,
+            detail: error.to_string(),
+        }
+    }
+
+    pub(super) fn not_applicable(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            name,
+            status: CaseStatus::NotApplicable,
+            detail: detail.into(),
+        }
+    }
+}
+
+pub(super) struct ScenarioRun {
+    checks: Vec<ScenarioCheck>,
+    abort_detail: Option<String>,
+}
+
+impl ScenarioRun {
+    pub(super) fn new() -> Self {
+        Self {
+            checks: Vec::new(),
+            abort_detail: None,
+        }
+    }
+
+    pub(super) fn push(&mut self, check: ScenarioCheck) {
+        self.checks.push(check);
+    }
+
+    pub(super) fn abort(mut self, error: impl std::fmt::Display) -> Self {
+        self.abort_detail = Some(error.to_string());
+        self
     }
 }
 
@@ -195,11 +255,13 @@ pub async fn run_suite(options: RunOptions) -> Result<Report, ConformanceError> 
 /// be a `target/` directory in the current workspace. It is removed on success
 /// or failure.
 mod advanced;
+mod authentication;
 mod basic;
 mod drafts;
 mod local_stack;
 mod model_config;
 mod probe;
+mod session_contracts;
 mod streaming;
 mod suite;
 mod tools;
@@ -243,6 +305,23 @@ mod tests {
         assert!(report(OutputFormat::Json)
             .render()
             .contains("\"scope\": \"protocol_core\""));
+    }
+
+    #[test]
+    fn reports_optional_capabilities_as_not_applicable() {
+        let report = Report {
+            target: "ws://example.test/ahp".to_owned(),
+            model_checks: false,
+            cases: vec![CaseResult {
+                name: "additional-chat",
+                status: CaseStatus::NotApplicable,
+                scope: CaseScope::TextChatProfile,
+                detail: "multipleChats was not advertised".to_owned(),
+            }],
+            format: OutputFormat::Json,
+        };
+        assert!(report.render().contains("\"status\": \"not_applicable\""));
+        assert!(!report.failed());
     }
 
     #[test]

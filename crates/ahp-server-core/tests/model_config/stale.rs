@@ -38,7 +38,7 @@ async fn rejects_a_stale_saved_model_before_starting_or_calling_upstream(
         1,
         "initialize",
         json!({
-            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.8.0"],
+            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.9.0"],
             "initialSubscriptions": ["ahp-root://"]
         }),
     )

@@ -61,6 +61,7 @@ impl Data {
             activity: needs_input
                 .then(|| "Waiting for input".into())
                 .or_else(|| primary.and_then(chat_activity)),
+            origin: None,
             project: None,
             working_directories: Some(vec![session.workspace.clone()]),
             annotations: None,
@@ -142,6 +143,7 @@ fn session_snapshot(
             title: summary.title,
             status: summary.status,
             activity: summary.activity,
+            origin: None,
             project: None,
             working_directories: Some(vec![session.workspace.clone()]),
             annotations: None,

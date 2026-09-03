@@ -622,6 +622,13 @@ fn persisted_catalogue_promotes_blocked_and_error_chats_over_a_latest_idle_defau
     let latest_idle = chat_state(store, error_idle_chat)?;
     let error = chat_state(store, error_chat)?;
     assert_eq!(error.status, SessionStatus::Error.bits());
+    assert!(matches!(
+        error
+            .turns
+            .last()
+            .and_then(|turn| turn.response_parts.last()),
+        Some(ResponsePart::Error(_))
+    ));
     assert_eq!(store.session_summary(&error_session)?.status, error.status);
     assert_eq!(
         store.session_summary(&error_session)?.modified_at,

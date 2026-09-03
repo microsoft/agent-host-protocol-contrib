@@ -46,6 +46,13 @@ function ResponsePart({
       return <Marker variant="border"><MarkerContent>Response resource: {part.uri}</MarkerContent></Marker>
     case ResponsePartKind.InputRequest:
       return <Marker variant="border"><MarkerContent>{part.message}</MarkerContent></Marker>
+    case ResponsePartKind.Error:
+      return (
+        <Marker variant="border" className="text-destructive">
+          <MarkerIcon><CircleAlert /></MarkerIcon>
+          <MarkerContent>{part.message}</MarkerContent>
+        </Marker>
+      )
     case ResponsePartKind.ToolCall:
       return (
         <ToolCallCard
@@ -105,12 +112,6 @@ function ConversationItem({
               <BubbleContent><span className="animate-pulse text-muted-foreground">Thinking…</span></BubbleContent>
             </Bubble>
           ) : null}
-          {turn.error && (
-            <Marker variant="border" className="text-destructive">
-              <MarkerIcon><CircleAlert /></MarkerIcon>
-              <MarkerContent>{turn.error}</MarkerContent>
-            </Marker>
-          )}
         </MessageContent>
       </Message>
     </div>

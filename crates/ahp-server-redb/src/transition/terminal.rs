@@ -4,6 +4,7 @@ use ahp_server_core::{CommittedTransition, FinishTurn, StoreConflict, StoreError
 use ahp_types::actions::{
     ChatErrorAction, ChatTurnCancelledAction, ChatTurnCompleteAction, StateAction,
 };
+use ahp_types::state::{ErrorResponsePart, ResponsePart};
 
 use crate::replay::{Draft, TransitionWork};
 use crate::sessions::write_chat;
@@ -77,6 +78,13 @@ impl RedbHostStore {
             if state != PersistedTurnState::Complete {
                 terminalize_incomplete_tool_calls(&mut parts, "Tool call was interrupted.");
             }
+            let error_part = error.clone().map(|error| ErrorResponsePart {
+                error,
+                resumable: None,
+            });
+            if let Some(part) = error_part.clone() {
+                parts.push(ResponsePart::Error(part));
+            }
             if let Some(model_cursor) = model_cursor {
                 chat.model_cursor = model_cursor;
             }
@@ -98,7 +106,7 @@ impl RedbHostStore {
                 vec![
                     Draft::action(
                         chat_uri,
-                        terminal_action(&turn_id, duration, state, error)?,
+                        terminal_action(&turn_id, duration, state, error_part)?,
                         origin,
                     ),
                     summary_draft(&chat),
@@ -112,7 +120,7 @@ fn terminal_action(
     turn_id: &str,
     duration: i64,
     state: PersistedTurnState,
-    error: Option<ahp_types::state::ErrorInfo>,
+    error: Option<ErrorResponsePart>,
 ) -> Result<StateAction, StoreError> {
     Ok(match state {
         PersistedTurnState::Complete => StateAction::ChatTurnComplete(ChatTurnCompleteAction {
@@ -128,7 +136,7 @@ fn terminal_action(
         PersistedTurnState::Error => StateAction::ChatError(ChatErrorAction {
             turn_id: turn_id.into(),
             duration,
-            error: error.ok_or_else(|| {
+            part: error.ok_or_else(|| {
                 StoreError::Backend("error terminal state requires error information".into())
             })?,
             meta: None,

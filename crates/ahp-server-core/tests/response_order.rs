@@ -104,7 +104,7 @@ async fn preserves_markdown_tool_markdown_order_across_model_rounds(
         "initialize",
         json!({
             "channel": "ahp-root://", "clientId": "ordering-client",
-            "protocolVersions": ["0.8.0"], "initialSubscriptions": ["ahp-root://"]
+            "protocolVersions": ["0.9.0"], "initialSubscriptions": ["ahp-root://"]
         }),
     )
     .await?;

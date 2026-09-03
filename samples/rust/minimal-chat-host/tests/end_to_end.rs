@@ -305,7 +305,7 @@ async fn initialization_response_precedes_concurrent_action_delivery() -> TestRe
                 "params": {
                     "channel": "ahp-root://",
                     "clientId": "initializer",
-                    "protocolVersions": ["0.8.0"],
+                    "protocolVersions": ["0.9.0"],
                     "initialSubscriptions": [CHAT_URI],
                 },
             })
@@ -561,7 +561,7 @@ async fn initialize(
         json!({
             "channel": "ahp-root://",
             "clientId": client_id,
-            "protocolVersions": ["0.8.0"],
+            "protocolVersions": ["0.9.0"],
             "initialSubscriptions": subscriptions,
         }),
     )

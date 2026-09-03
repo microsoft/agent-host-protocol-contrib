@@ -187,7 +187,7 @@ async fn explicit_message_model_bypasses_missing_legacy_selection(
         1,
         "initialize",
         json!({
-            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.8.0"],
+            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.9.0"],
             "initialSubscriptions": ["ahp-root://"]
         }),
     )

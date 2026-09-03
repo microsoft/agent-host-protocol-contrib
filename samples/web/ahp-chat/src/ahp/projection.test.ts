@@ -3,6 +3,7 @@ import {
   ConfirmationOptionKind,
   MessageKind,
   ResponsePartKind,
+  TurnState,
   chatReducer,
   type ChatState,
 } from "@microsoft/agent-host-protocol"
@@ -142,6 +143,35 @@ describe("chat projection", () => {
       ResponsePartKind.Markdown,
     ])
   })
+
+  it("projects AHP 0.9 turn errors in response order", () => {
+    const started = chatReducer(baseChat, {
+      type: ActionType.ChatTurnStarted,
+      turnId: "turn-1",
+      startedAt: "2026-08-28T00:00:01.000Z",
+      message: { text: "Hello", origin: { kind: MessageKind.User } },
+    })
+    const failed = chatReducer(started, {
+      type: ActionType.ChatError,
+      turnId: "turn-1",
+      duration: 10,
+      part: {
+        kind: ResponsePartKind.Error,
+        error: { errorType: "model", message: "Model unavailable" },
+        resumable: true,
+      },
+    })
+
+    expect(projectChat(failed).turns[0]).toMatchObject({
+      state: TurnState.Error,
+      responseParts: [{
+        kind: ResponsePartKind.Error,
+        message: "Model unavailable",
+        resumable: true,
+      }],
+    })
+  })
+
   it("keeps tools between markdown while skipping empty compatibility parts", () => {
     const started = chatReducer(baseChat, {
       type: ActionType.ChatTurnStarted,

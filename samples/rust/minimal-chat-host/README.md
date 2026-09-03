@@ -83,7 +83,7 @@ All commands below are JSON-RPC requests targeting the stated channel.
 | Method | Availability | Behavior |
 | --- | --- | --- |
 | `ping` | before or after initialization | Accepts `ahp-root://`; replies with `null`. |
-| `initialize` | once per connection | Negotiates an `ahp-types` 0.8 protocol version and may include root, session, and chat snapshots from `initialSubscriptions`. |
+| `initialize` | once per connection | Negotiates an `ahp-types` 0.9 protocol version and may include root, session, and chat snapshots from `initialSubscriptions`. |
 | `subscribe` | after initialization | Accepts only the root, fixed session, or fixed chat URI and returns that typed snapshot. |
 | `listSessions` | after initialization | On `ahp-root://`, returns the one fixed session summary. |
 | `dispatchAction` | notification after initialization | Accepts only `chat/turnStarted` and `chat/turnCancelled` on the fixed chat. |

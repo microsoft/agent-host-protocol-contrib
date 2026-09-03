@@ -3,7 +3,7 @@
 use ahp_types::actions::{
     ChatErrorAction, ChatTurnCancelledAction, ChatTurnCompleteAction, StateAction,
 };
-use ahp_types::state::{ResponsePart, ToolCallState, TurnState};
+use ahp_types::state::{ErrorResponsePart, ResponsePart, ToolCallState, TurnState};
 use chrono::Utc;
 
 use super::{now, tool_state_id, Data, StoredTurn};
@@ -66,6 +66,13 @@ impl Data {
         if state != TurnState::Complete {
             terminalize_tools(&mut parts)?;
         }
+        let error_part = error.clone().map(|error| ErrorResponsePart {
+            error,
+            resumable: None,
+        });
+        if let Some(part) = error_part.clone() {
+            parts.push(ResponsePart::Error(part));
+        }
         if let Some(model_cursor) = model_cursor {
             chat.model_cursor = model_cursor;
         }
@@ -82,7 +89,7 @@ impl Data {
             chat.turns.remove(0);
         }
         chat.modified_at = now();
-        let action = terminal_action(&turn_id, duration, state, error)?;
+        let action = terminal_action(&turn_id, duration, state, error_part)?;
         let summary = self.chat_summary(self.chat(&chat_uri)?);
         Ok((
             duration,
@@ -98,7 +105,7 @@ fn terminal_action(
     turn_id: &str,
     duration: i64,
     state: TurnState,
-    error: Option<ahp_types::state::ErrorInfo>,
+    error: Option<ErrorResponsePart>,
 ) -> Result<StateAction, StoreError> {
     Ok(match state {
         TurnState::Complete => StateAction::ChatTurnComplete(ChatTurnCompleteAction {
@@ -114,7 +121,7 @@ fn terminal_action(
         TurnState::Error => StateAction::ChatError(ChatErrorAction {
             turn_id: turn_id.into(),
             duration,
-            error: error.ok_or_else(|| {
+            part: error.ok_or_else(|| {
                 StoreError::Backend("error terminal state requires error info".into())
             })?,
             meta: None,

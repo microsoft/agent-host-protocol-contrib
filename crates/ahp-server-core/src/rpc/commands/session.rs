@@ -1,11 +1,12 @@
 //! Session catalogue command implementations.
 
 use ahp_types::commands::{
-    CreateChatParams, CreateSessionParams, DisposeSessionParams, InitializeParams,
-    ListSessionsParams, ReconnectParams,
+    CreateChatParams, CreateSessionParams, DisposeSessionParams, FetchTurnsParams,
+    InitializeParams, ListSessionsParams, ReconnectParams,
 };
 use ahp_types::common::ROOT_RESOURCE_URI;
 use ahp_types::errors::ahp_error_codes;
+use ahp_types::state::SnapshotState;
 use ahp_types::SUPPORTED_PROTOCOL_VERSIONS;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -156,10 +157,8 @@ pub(super) async fn create_session(
             "createSession channel must be an ahp-session URI",
         ));
     }
-    if request.active_client.is_some() || request.fork.is_some() {
-        return Err(RpcFault::invalid_params(
-            "active clients and forks are unsupported",
-        ));
+    if request.active_client.is_some() {
+        return Err(RpcFault::invalid_params("active clients are unsupported"));
     }
     let provider = request.provider.unwrap_or_else(|| "openai".into());
     if provider != "openai" {
@@ -281,4 +280,21 @@ pub(super) async fn dispose_session(
     )
     .await;
     Ok(Value::Null)
+}
+
+pub(super) fn fetch_turns(host: &CoreHost, request: FetchTurnsParams) -> Result<Value, RpcFault> {
+    if !matches!(
+        snapshot(host, request.channel.clone())?.state,
+        SnapshotState::Chat(_)
+    ) {
+        return Err(RpcFault::invalid_params(
+            "fetchTurns must target an AHP chat channel",
+        ));
+    }
+    if request.cursor.is_some() {
+        return Err(RpcFault::invalid_params(
+            "this host retains all available turns and did not issue a history cursor",
+        ));
+    }
+    Ok(json!({}))
 }

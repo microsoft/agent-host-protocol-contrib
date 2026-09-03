@@ -276,9 +276,14 @@ fn active_turn(turn: &ActiveTurn) -> Value {
 
 #[rustfmt::skip]
 fn finished_turn(turn: &FinishedTurn) -> Value {
-    let mut value = json!({"id": turn.id, "startedAt": turn.started_at, "duration": turn.duration, "message": turn.message, "responseParts": [markdown_part(&turn.id, &turn.response)], "state": turn.state});
-    if let Some(error) = &turn.error { value["error"] = json!({ "errorType": "upstream", "message": error }); }
-    value
+    let mut response_parts = vec![markdown_part(&turn.id, &turn.response)];
+    if let Some(error) = &turn.error {
+        response_parts.push(json!({
+            "kind": "error",
+            "error": { "errorType": "upstream", "message": error },
+        }));
+    }
+    json!({"id": turn.id, "startedAt": turn.started_at, "duration": turn.duration, "message": turn.message, "responseParts": response_parts, "state": turn.state})
 }
 
 #[rustfmt::skip]

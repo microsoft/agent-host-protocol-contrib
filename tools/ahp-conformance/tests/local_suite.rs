@@ -15,12 +15,13 @@ async fn deterministic_stack_passes_the_local_suite() -> Result<(), Box<dyn std:
             timeout: Duration::from_secs(5),
             selected_cases: Vec::new(),
             model_checks: true,
+            auth_token: None,
             format: OutputFormat::Text,
         },
         data_dir,
     )
     .await?;
     assert!(!report.failed(), "{}", report.render());
-    assert_eq!(report.case_count(), 28);
+    assert_eq!(report.case_count(), 63);
     Ok(())
 }

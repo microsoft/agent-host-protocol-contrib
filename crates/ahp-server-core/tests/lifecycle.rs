@@ -159,7 +159,7 @@ async fn initialized_session(
 ) -> String {
     message(host, peer.id(), json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": { "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.8.0"], "initialSubscriptions": ["ahp-root://"] }
+        "params": { "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.9.0"], "initialSubscriptions": ["ahp-root://"] }
     })).await;
     response(peer, 1).await;
     message(
@@ -284,6 +284,10 @@ async fn duplicate_id_from_later_model_round_errors_and_clears_active_turn() {
     for _ in 0..24 {
         let frame = next(&mut peer).await;
         if frame.pointer("/params/action/type").and_then(Value::as_str) == Some("chat/error") {
+            assert_eq!(
+                frame.pointer("/params/action/part/kind"),
+                Some(&Value::String("error".into()))
+            );
             saw_error = true;
             break;
         }
@@ -306,6 +310,14 @@ async fn duplicate_id_from_later_model_round_errors_and_clears_active_turn() {
         chat.turns.last().expect("terminal turn").state,
         ahp_types::state::TurnState::Error
     );
+    assert!(matches!(
+        chat.turns
+            .last()
+            .expect("terminal turn")
+            .response_parts
+            .last(),
+        Some(ahp_types::state::ResponsePart::Error(_))
+    ));
 }
 
 #[tokio::test]

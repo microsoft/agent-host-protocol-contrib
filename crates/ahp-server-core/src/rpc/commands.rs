@@ -58,6 +58,10 @@ pub(super) async fn process_request(
             require_initialized(host, peer_id).await?;
             session::dispose_session(host, params(&request)?).await
         }
+        "fetchTurns" => {
+            require_initialized(host, peer_id).await?;
+            session::fetch_turns(host, params(&request)?)
+        }
         _ => Err(RpcFault {
             code: json_rpc_error_codes::METHOD_NOT_FOUND,
             message: format!(

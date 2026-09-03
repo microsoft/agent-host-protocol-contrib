@@ -2,7 +2,7 @@
 
 use ahp_server_core::StoreError;
 use ahp_types::actions::{ChatErrorAction, StateAction};
-use ahp_types::state::ErrorInfo;
+use ahp_types::state::{ErrorInfo, ErrorResponsePart, ResponsePart};
 
 use crate::replay::{Draft, TransitionWork};
 use crate::sessions::{load_chat, session_owns_chat, write_chat};
@@ -58,6 +58,11 @@ impl RedbHostStore {
                 &mut parts,
                 "Tool call was interrupted by host restart.",
             );
+            let error_part = ErrorResponsePart {
+                error: error.clone(),
+                resumable: None,
+            };
+            parts.push(ResponsePart::Error(error_part.clone()));
             chat.turns.push(PersistedTurn {
                 id: active.id.clone(),
                 started_at: active.started_at,
@@ -79,7 +84,7 @@ impl RedbHostStore {
                         StateAction::ChatError(ChatErrorAction {
                             turn_id: active.id,
                             duration,
-                            error,
+                            part: error_part,
                             meta: None,
                         }),
                         None,

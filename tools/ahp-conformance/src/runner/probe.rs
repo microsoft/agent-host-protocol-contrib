@@ -34,6 +34,7 @@ pub(crate) struct Probe {
     next_client_seq: i64,
     timeout: Duration,
     last_server_seq: Option<i64>,
+    auth_token: Option<String>,
 }
 
 impl Probe {
@@ -55,7 +56,16 @@ impl Probe {
             next_client_seq: 1,
             timeout: timeout_duration,
             last_server_seq: None,
+            auth_token: None,
         })
+    }
+
+    pub(crate) fn set_auth_token(&mut self, auth_token: Option<&str>) {
+        self.auth_token = auth_token.map(str::to_owned);
+    }
+
+    pub(crate) fn auth_token(&self) -> Option<&str> {
+        self.auth_token.as_deref()
     }
 
     async fn connect_standard(
@@ -351,6 +361,55 @@ impl Probe {
         Ok(message)
     }
 
+    pub(crate) async fn wait_notification_for_resource(
+        &mut self,
+        method: &str,
+        channel: &str,
+        resource: &str,
+    ) -> Result<Value, ConformanceError> {
+        self.wait_for(|message| notification_matches(message, method, channel, resource))
+            .await
+    }
+
+    pub(crate) async fn assert_no_action_for_client_sequence(
+        &mut self,
+        channel: &str,
+        action_type: &str,
+        client_seq: i64,
+        duration: Duration,
+    ) -> Result<(), ConformanceError> {
+        if self
+            .buffered
+            .iter()
+            .any(|message| action_matches(message, channel, action_type, client_seq))
+        {
+            return Err(ConformanceError::Options(format!(
+                "received {action_type} with clientSeq {client_seq} after unsubscribing from {channel}"
+            )));
+        }
+        let deadline = tokio::time::Instant::now() + duration;
+        loop {
+            let frame = match tokio::time::timeout_at(deadline, self.reader.next()).await {
+                Ok(Some(frame)) => frame?,
+                Ok(None) => return Err(ConformanceError::Closed),
+                Err(_) => return Ok(()),
+            };
+            let message = match frame {
+                Message::Text(text) => serde_json::from_str(text.as_str())?,
+                Message::Binary(bytes) => serde_json::from_slice(&bytes)?,
+                Message::Close(_) => return Err(ConformanceError::Closed),
+                Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+            };
+            self.observe_server_sequence(&message)?;
+            if action_matches(&message, channel, action_type, client_seq) {
+                return Err(ConformanceError::Options(format!(
+                    "received {action_type} with clientSeq {client_seq} after unsubscribing from {channel}"
+                )));
+            }
+            self.buffered.push_back(message);
+        }
+    }
+
     fn describe_action_timeout(
         &self,
         error: ConformanceError,
@@ -522,6 +581,29 @@ fn post_cancel_activity_type<'a>(
         "chat/delta" | "chat/error" | "chat/turnComplete"
     ) || action_type.starts_with("chat/toolCall"))
     .then_some(action_type)
+}
+
+fn notification_matches(message: &Value, method: &str, channel: &str, resource: &str) -> bool {
+    message.get("method").and_then(Value::as_str) == Some(method)
+        && message.pointer("/params/channel").and_then(Value::as_str) == Some(channel)
+        && (message
+            .pointer("/params/summary/resource")
+            .and_then(Value::as_str)
+            == Some(resource)
+            || message.pointer("/params/session").and_then(Value::as_str) == Some(resource))
+}
+
+fn action_matches(message: &Value, channel: &str, action_type: &str, client_seq: i64) -> bool {
+    message.get("method").and_then(Value::as_str) == Some("action")
+        && message.pointer("/params/channel").and_then(Value::as_str) == Some(channel)
+        && message
+            .pointer("/params/action/type")
+            .and_then(Value::as_str)
+            == Some(action_type)
+        && message
+            .pointer("/params/origin/clientSeq")
+            .and_then(Value::as_i64)
+            == Some(client_seq)
 }
 
 fn bounded_header_end(received: &[u8], maximum: usize) -> Result<Option<usize>, ConformanceError> {

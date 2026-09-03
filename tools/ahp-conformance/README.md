@@ -37,19 +37,86 @@ hidden. Profiles are stored in the gitignored
 also combine `--target` or `AHP_CONFORMANCE_TARGET` with
 `--save-target <name>`. Reports redact URL userinfo and query strings.
 
+If the selected agent advertises OAuth protected resources, provide a bearer
+token through the environment. The runner pushes it with AHP's `authenticate`
+command before creating each session and never includes it in reports:
+
+```powershell
+$env:AHP_CONFORMANCE_AUTH_TOKEN = gh auth token
+cargo run -p ahp-conformance -- --target-profile vscode-local
+Remove-Item Env:AHP_CONFORMANCE_AUTH_TOKEN
+```
+
+```bash
+AHP_CONFORMANCE_AUTH_TOKEN="$(gh auth token)" \
+  cargo run -p ahp-conformance -- --target-profile vscode-local
+```
+
 Plain `ws://` connections use a bounded, validated one-write HTTP upgrade for
 compatibility with hosts whose upgrade parser is sensitive to fragmented
 handshakes. Secure `wss://` connections use the standard TLS WebSocket client.
 
-The standard cases are:
+The standard suite reports 41 independently named contracts:
 
-- `negotiation` — compatible and incompatible initialize offers
-- `sessions` — root/session/chat snapshots plus session listing
-- `streaming-lifecycle` — response part, deltas, and completion ordering
-- `cancellation` — cancellation while a delayed completion is pending, followed
-  by a bounded post-cancel quiescence check
-- `synchronization-replay` — live second-client delivery and reconnect replay
-- `errors` — malformed JSON, unsupported method, and invalid parameters
+- Transport:
+  - `ping-before-initialize`
+  - `ping-after-initialize`
+- Initialization:
+  - `initialize-version`
+  - `initialize-root-snapshot`
+  - `initialize-unsupported-version`
+- Authentication:
+  - `authentication-invalid-resource`
+  - `authentication-advertised-resource` *(not applicable without advertised resources or a supplied token)*
+- Sessions and chats:
+  - `session-default-chat`
+  - `unknown-metadata-ignored`
+  - `initial-subscription-snapshots`
+  - `root-session-added`
+  - `session-duplicate-error`
+  - `session-summary-shape`
+  - `chat-subscription-snapshot`
+  - `session-listing`
+  - `session-pagination-limit`
+  - `session-pagination-cursor`
+  - `session-pagination-invalid-cursor`
+  - `session-list-order`
+  - `fetch-turns-invalid-cursor`
+  - `additional-chat` *(not applicable when `multipleChats` is not advertised)*
+  - `root-session-removed`
+  - `disposed-session-absent`
+  - `unsubscribe-stops-delivery`
+- Turn streaming:
+  - `turn-started`
+  - `response-part-markdown`
+  - `response-deltas`
+  - `response-part-before-delta`
+  - `turn-complete`
+  - `root-session-summary-changed`
+  - `session-summary-identity-omitted`
+- Cancellation:
+  - `cancellation-terminal`
+  - `cancellation-quiescence`
+  - `cancellation-snapshot`
+- Synchronization and replay:
+  - `multi-client-live-delivery`
+  - `reconnect-action-replay`
+  - `replay-turn-lifecycle`
+  - `subscribe-retains-all-turns`
+- JSON-RPC errors:
+  - `jsonrpc-parse-error`
+  - `jsonrpc-method-not-found`
+  - `jsonrpc-invalid-params`
+
+The old compound names remain available as selectors. For example,
+`--case negotiation` selects all three initialization contracts, while
+`--case initialize-version` selects only that contract. The other group
+selectors are `sessions`, `streaming-lifecycle`, `cancellation`,
+`synchronization-replay`, and `errors`. The `transport` group selects both ping
+contracts.
+
+The local-fixture-only cases are:
+
 - `workspace-validation` *(local only)* — allowed-root URI validation, canonical
   workspace selection, and server-tool schemas
 - `replace-string-tool` *(local only)* — exact replacement lifecycle, persisted
@@ -93,7 +160,8 @@ The standard cases are:
 - `streaming-cancellation` *(local only)* — cancellation after the first upstream
   delta under both explicit API modes
 
-The complete `--local-fixture` suite contains 28 cases.
+The complete `--local-fixture` suite contains 63 independently reported cases:
+41 standard contracts and 22 fixture-only cases.
 
 Each result carries a scope label. `protocol-core` covers handshake and
 JSON-RPC behavior; `text-chat-profile` covers the session/chat streaming
@@ -105,7 +173,26 @@ upstream streaming; and `local-fixture-model-configuration` covers discovered
 models plus root, session, and per-message model configuration; and
 `local-fixture-chat-drafts` covers durable draft state, conversation history,
 and tool-to-text response-part ordering. All cases marked local only require
-`--local-fixture`.
+`--local-fixture`. An optional capability that is not advertised is reported as
+`not_applicable` rather than passed, failed, or skipped.
+
+### Protocol doc-comment coverage
+
+The standard cases are derived from the observable AHP 0.9 contracts documented
+by `ahp-types`. This pass covers negotiation, unknown metadata, protected-resource
+authentication, initial and explicit subscriptions, session catalogue shape and
+ordering, pagination, session lifecycle notifications, duplicate creation,
+history cursors, action unsubscription, response-part ordering, summary-change
+notifications, retained-turn snapshots, replay, cancellation, and JSON-RPC
+errors.
+
+Requirements that only apply when a host advertises another protocol surface
+are intentionally not treated as passing when that surface is absent. Dedicated
+capability-gated scenarios are still needed for resource operations and watches,
+OTLP telemetry, MCP Apps, terminals, changesets, annotations, automations, and
+tunnels. Those scenarios need capability predicates and, for filesystem or
+process mutations, explicit side-effect and cleanup controls before they are
+safe to run against arbitrary hosts.
 
 By default model text is not asserted, which makes the standard suite useful
 against a well-behaving real host/model. `--model-checks` enables exact output
@@ -132,12 +219,12 @@ The v2 fixture produces a tool round followed by its final-text round; it
 cannot model text before a tool in the same round. `response-part-ordering`
 therefore covers the reported tool-to-text ordering regression.
 
-Internally, `runner/suite.rs` selects and reports cases, `basic.rs`, `turns.rs`,
-`advanced.rs`, `model_config/`, and `tools/` own cohesive probe groups, and
-`probe.rs` owns WebSocket request correlation and bounded frame reads. The
-local stack only starts/stops the fixture/sample host and manages temporary
-files; every host assertion uses raw WebSocket JSON-RPC frames and never
-inspects host storage.
+Internally, `runner/suite.rs` selects and reports cases, `basic.rs`,
+`session_contracts.rs`, `turns.rs`, `advanced.rs`, `model_config/`, and
+`tools/` own cohesive probe groups, and `probe.rs` owns WebSocket request
+correlation and bounded frame reads. The local stack only starts/stops the
+fixture/sample host and manages temporary files; every host assertion uses raw
+WebSocket JSON-RPC frames and never inspects host storage.
 
 **Audience:** host implementers verifying observable compatibility. Start with
 `src/main.rs`, then `src/runner.rs`, and use `--case` to isolate one scope.

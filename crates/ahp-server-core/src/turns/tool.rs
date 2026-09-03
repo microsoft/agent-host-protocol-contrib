@@ -228,7 +228,7 @@ async fn transition_ready(
             chat: started.chat.clone(),
             turn_id: started.turn_id.clone(),
             tool_call_id: presentation.id.clone(),
-            next_state: presentation.ready_state(confirmed, selected.clone()),
+            next_state: presentation.ready_state(confirmed.clone(), selected.clone()),
             actions: vec![presentation.ready_action(&started.turn_id, Some(confirmed), None)],
             origin: None,
             allow_command: None,

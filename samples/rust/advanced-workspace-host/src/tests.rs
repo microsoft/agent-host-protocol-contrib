@@ -572,7 +572,7 @@ async fn shutdown_drains_a_delayed_turn_before_releasing_redb(
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {
                 "channel": "ahp-root://", "clientId": "shutdown-test",
-                "protocolVersions": ["0.8.0"], "initialSubscriptions": ["ahp-root://"]
+                "protocolVersions": ["0.9.0"], "initialSubscriptions": ["ahp-root://"]
             }
         }),
     )

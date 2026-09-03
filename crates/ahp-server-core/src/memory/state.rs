@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use ahp_types::actions::ActionEnvelope;
 use ahp_types::common::Uri;
-use ahp_types::state::{ErrorInfo, Message, ResponsePart, ToolCallState, Turn, TurnState};
+use ahp_types::state::{
+    ErrorInfo, ErrorResponsePart, Message, ResponsePart, ToolCallState, Turn, TurnState,
+};
 use chrono::{SecondsFormat, Utc};
 use workspace_agent_tools::ExactCommandApproval;
 
@@ -131,15 +133,26 @@ pub(super) struct StoredTurn {
 
 impl StoredTurn {
     pub(super) fn snapshot(&self) -> Turn {
+        let mut response_parts = self.response_parts.clone();
+        if !response_parts
+            .iter()
+            .any(|part| matches!(part, ResponsePart::Error(_)))
+        {
+            if let Some(error) = &self.error {
+                response_parts.push(ResponsePart::Error(ErrorResponsePart {
+                    error: error.clone(),
+                    resumable: None,
+                }));
+            }
+        }
         Turn {
             id: self.id.clone(),
             started_at: Some(self.started_at.clone()),
             duration: Some(self.duration),
             message: self.message.clone(),
-            response_parts: self.response_parts.clone(),
+            response_parts,
             usage: None,
             state: self.state,
-            error: self.error.clone(),
         }
     }
 }

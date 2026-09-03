@@ -199,7 +199,7 @@ async fn explicit_responses_error(
     let error = probe.wait_action(&session.chat, "chat/error").await?;
     require_turn(&error, turn_id, "chat/error")?;
     if error
-        .pointer("/params/action/error/errorType")
+        .pointer("/params/action/part/error/errorType")
         .and_then(Value::as_str)
         != Some("openai_upstream_error")
     {

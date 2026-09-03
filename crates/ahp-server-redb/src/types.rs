@@ -3,8 +3,8 @@
 use ahp_server_core::ModelCursor;
 use ahp_types::common::Uri;
 use ahp_types::state::{
-    ActiveTurn, ChatSummary, ErrorInfo, MarkdownResponsePart, Message, ModelSelection,
-    ResponsePart, SessionStatus, ToolCallState, Turn, TurnState,
+    ActiveTurn, ChatSummary, ErrorInfo, ErrorResponsePart, MarkdownResponsePart, Message,
+    ModelSelection, ResponsePart, SessionStatus, ToolCallState, Turn, TurnState,
 };
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -178,19 +178,30 @@ pub(crate) fn active_turn(active: &ActiveRecord) -> ActiveTurn {
 }
 
 pub(crate) fn turn(turn: &PersistedTurn) -> Turn {
+    let mut response_parts = response_parts(&turn.id, &turn.response, &turn.response_parts);
+    if !response_parts
+        .iter()
+        .any(|part| matches!(part, ResponsePart::Error(_)))
+    {
+        if let Some(error) = &turn.error {
+            response_parts.push(ResponsePart::Error(ErrorResponsePart {
+                error: error.clone(),
+                resumable: None,
+            }));
+        }
+    }
     Turn {
         id: turn.id.clone(),
         started_at: Some(turn.started_at.clone()),
         duration: Some(turn.duration),
         message: turn.message.clone(),
-        response_parts: response_parts(&turn.id, &turn.response, &turn.response_parts),
+        response_parts,
         usage: None,
         state: match turn.state {
             PersistedTurnState::Complete => TurnState::Complete,
             PersistedTurnState::Cancelled => TurnState::Cancelled,
             PersistedTurnState::Error => TurnState::Error,
         },
-        error: turn.error.clone(),
     }
 }
 

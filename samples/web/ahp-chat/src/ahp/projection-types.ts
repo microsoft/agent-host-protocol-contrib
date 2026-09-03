@@ -67,6 +67,12 @@ export interface ToolCallPartView {
   tool: ToolCallView
 }
 
+export interface ErrorPartView {
+  kind: ResponsePartKind.Error
+  message: string
+  resumable: boolean
+}
+
 export type ConversationPartView =
   | MarkdownPartView
   | ReasoningPartView
@@ -74,6 +80,7 @@ export type ConversationPartView =
   | ContentReferencePartView
   | InputRequestPartView
   | ToolCallPartView
+  | ErrorPartView
 
 export interface ConversationTurn {
   id: string
@@ -82,7 +89,6 @@ export interface ConversationTurn {
   assistantText: string
   responseParts: readonly ConversationPartView[]
   state: "complete" | "cancelled" | "error" | "streaming"
-  error?: string
 }
 
 export function freezeView<T>(value: T): T {

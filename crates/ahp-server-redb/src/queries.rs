@@ -135,6 +135,7 @@ fn session_snapshot(
             title: summary.title,
             status: summary.status,
             activity: summary.activity,
+            origin: None,
             project: None,
             working_directories: (!session.working_directories.is_empty())
                 .then_some(session.working_directories),
@@ -169,6 +170,7 @@ fn session_summary(
         title: session.title.clone(),
         status,
         activity,
+        origin: None,
         project: None,
         working_directories: (!session.working_directories.is_empty())
             .then_some(session.working_directories.clone()),

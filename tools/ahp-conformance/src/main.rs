@@ -53,6 +53,14 @@ struct Args {
     /// prompt syntax. Leave off for a real, nondeterministic model.
     #[arg(long)]
     model_checks: bool,
+    /// OAuth bearer token for protected resources advertised by the selected agent.
+    #[arg(
+        long,
+        env = "AHP_CONFORMANCE_AUTH_TOKEN",
+        hide_env_values = true,
+        conflicts_with = "local_fixture"
+    )]
+    auth_token: Option<String>,
     #[arg(long, value_enum, default_value_t = Format::Text)]
     format: Format,
 }
@@ -96,6 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeout: Duration::from_millis(args.timeout_ms),
         selected_cases: args.case,
         model_checks: args.model_checks,
+        auth_token: args.auth_token,
         format: args.format.into(),
     };
     let report = if args.local_fixture {

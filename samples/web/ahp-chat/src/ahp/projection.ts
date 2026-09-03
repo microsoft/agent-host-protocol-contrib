@@ -73,6 +73,8 @@ export function projectResponseParts(parts: readonly ResponsePart[]): readonly C
         return { kind: part.kind, uri: part.uri }
       case ResponsePartKind.InputRequest:
         return { kind: part.kind, message: plainText(part.request.message ?? "Input requested.") }
+      case ResponsePartKind.Error:
+        return { kind: part.kind, message: part.error.message, resumable: part.resumable === true }
     }
   })
 }
@@ -101,7 +103,6 @@ function projectTurn(turn: Turn): ConversationTurn {
     assistantText: responseText(turn.responseParts),
     responseParts: projectResponseParts(turn.responseParts),
     state: turn.state,
-    error: turn.error?.message,
   }
 }
 

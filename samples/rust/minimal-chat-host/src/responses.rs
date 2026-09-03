@@ -239,7 +239,10 @@ pub(crate) async fn finish_turn(
             "type": action_type,
             "turnId": turn_id,
             "duration": duration,
-            "error": { "errorType": "upstream", "message": error },
+            "part": {
+                "kind": "error",
+                "error": { "errorType": "upstream", "message": error },
+            },
         })
     } else {
         json!({ "type": action_type, "turnId": turn_id, "duration": duration })
