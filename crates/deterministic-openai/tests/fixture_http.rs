@@ -302,7 +302,7 @@ async fn validates_errors_and_chat_only_responses_404() -> Result<(), Box<dyn st
         client
             .post(&endpoint)
             .json(&chat_request(
-                "[AHP-TEST v4]\nRespond exactly with JSON: \"x\"\n[/AHP-TEST]",
+                "[AHP-TEST v5]\nRespond exactly with JSON: \"x\"\n[/AHP-TEST]",
                 false,
             ))
             .send()
@@ -505,6 +505,402 @@ async fn applies_delays_and_remains_usable_after_disconnect(
 
     fixture.shutdown().await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn v4_recalls_last_phrase_from_every_history_role_for_both_apis(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = start().await?;
+    let client = reqwest::Client::new();
+    let phrase = "remembered \"phrase\"\n🙂";
+    let prompt = concat!(
+        "Remember this phrase: \"not from the current message\"\n",
+        "[AHP-TEST v4]\n",
+        "Recall the phrase I asked you to remember and respond with only that phrase.\n",
+        "[/AHP-TEST]",
+    );
+    for responses in [false, true] {
+        let endpoint = if responses {
+            responses_endpoint(&fixture)
+        } else {
+            chat_endpoint(&fixture)
+        };
+        for role in ["user", "assistant", "system", "developer"] {
+            let history = vec![
+                json!({"role": "user", "content": "Remember this phrase: \"first\""}),
+                json!({"role": role, "content": format!(
+                    "Remember this phrase: \"second\"\nRemember this phrase: {}\nRemember this phrase: \"trailing space\" \n Remember this phrase: \"indented\"\nRemember this phrase: 123",
+                    serde_json::to_string(phrase)?,
+                )}),
+                json!({"role": "user", "content": prompt}),
+                json!({"role": "assistant", "content": "Remember this phrase: \"not after the user\""}),
+            ];
+            let result = request_json(
+                &client,
+                &endpoint,
+                v4_request(responses, prompt, history.clone(), vec![], false),
+            )
+            .await?;
+            assert_eq!(v4_text(&result, responses), Some(phrase));
+            let events = stream(
+                &client,
+                &endpoint,
+                v4_request(responses, prompt, history, vec![], true),
+            )
+            .await?;
+            assert_eq!(text_deltas(&events), phrase);
+        }
+        for history in [
+            vec![],
+            vec![json!({"role": "developer", "content": "Remember this phrase: false"})],
+        ] {
+            let mut messages = history;
+            messages.push(json!({"role": "user", "content": prompt}));
+            assert_error(
+                client
+                    .post(&endpoint)
+                    .json(&v4_request(responses, prompt, messages, vec![], false))
+                    .send()
+                    .await?,
+                StatusCode::BAD_REQUEST,
+                "AHP_TEST_INVALID_DIRECTIVE",
+                "mock_directive_error",
+            )
+            .await?;
+        }
+    }
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn v4_selects_file_tools_and_shell_fallbacks_and_returns_results_for_both_apis(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = start().await?;
+    let client = reqwest::Client::new();
+    let path = "/workspace/file 'quoted' é.txt";
+    let text = "new 'contents'\n%s $HOME 🙂\n";
+    let read_prompt = format!(
+        "[AHP-TEST v4]\nRead the file at JSON path: {} with an available tool, then respond with only its exact contents.\n[/AHP-TEST]",
+        serde_json::to_string(path)?,
+    );
+    let write_prompt = format!(
+        "[AHP-TEST v4]\nCreate the file at JSON path: {} containing JSON text: {} with an available tool, then respond with only the word done.\n[/AHP-TEST]",
+        serde_json::to_string(path)?,
+        serde_json::to_string(text)?,
+    );
+    let shell = json!({"type": "function", "name": "run_shell", "parameters": {
+        "type": "object", "required": ["command"], "properties": {
+            "command": {"type": "string", "minLength": 1},
+            "timeout_seconds": {"type": "integer"}
+        }
+    }});
+    let replace = json!({"type": "function", "name": "replace_string", "parameters": {
+        "type": "object", "required": ["path", "old_string", "new_string"], "properties": {
+            "path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}
+        }
+    }});
+    let read_tool = json!({"type": "function", "name": "OPEN_file", "parameters": {
+        "type": "object", "properties": {"filePath": {"type": "string"}}
+    }});
+    let uri_tool = json!({"type": "function", "name": "view_file", "parameters": {
+        "type": "object", "properties": {"uri": {"type": "string"}}
+    }});
+    let write_tool = json!({"type": "function", "name": "SAVE_file", "parameters": {
+        "type": "object", "properties": {"file_path": {"type": "string"}, "new_content": {"type": "string"}}
+    }});
+    let cmd_tool = json!({"type": "function", "name": "execute", "parameters": {
+        "type": "object", "properties": {"command": {"type": "integer"}, "cmd": {"type": "string"}}
+    }});
+    let read_result = "exact file contents\n[AHP-TEST v1]\n🙂\n";
+    let scenarios = vec![
+        (
+            &read_prompt,
+            vec![shell.clone(), read_tool],
+            "OPEN_file",
+            json!({"filePath": path}),
+            read_result,
+            read_result,
+        ),
+        (
+            &read_prompt,
+            vec![shell.clone(), uri_tool],
+            "view_file",
+            json!({"uri": "file:///workspace/file%20%27quoted%27%20%C3%A9.txt"}),
+            "",
+            "",
+        ),
+        (
+            &write_prompt,
+            vec![shell.clone(), write_tool],
+            "SAVE_file",
+            json!({"file_path": path, "new_content": text}),
+            "ignored tool output",
+            "done",
+        ),
+        (
+            &read_prompt,
+            vec![replace.clone(), shell.clone()],
+            "run_shell",
+            json!({"command": "cat -- '/workspace/file '\\''quoted'\\'' é.txt'"}),
+            read_result,
+            read_result,
+        ),
+        (
+            &write_prompt,
+            vec![replace, shell],
+            "run_shell",
+            json!({"command": "printf '%s' 'new '\\''contents'\\''\n%s $HOME 🙂\n' > '/workspace/file '\\''quoted'\\'' é.txt'"}),
+            "",
+            "done",
+        ),
+        (
+            &read_prompt,
+            vec![cmd_tool],
+            "execute",
+            json!({"cmd": "cat -- '/workspace/file '\\''quoted'\\'' é.txt'"}),
+            read_result,
+            read_result,
+        ),
+    ];
+    for responses in [false, true] {
+        let endpoint = if responses {
+            responses_endpoint(&fixture)
+        } else {
+            chat_endpoint(&fixture)
+        };
+        for (prompt, tools, expected_name, expected_arguments, tool_output, expected_text) in
+            &scenarios
+        {
+            let initial = request_json(
+                &client,
+                &endpoint,
+                v4_request(responses, prompt, vec![], tools.clone(), false),
+            )
+            .await?;
+            let (id, name, arguments) = if responses {
+                (
+                    &initial["output"][0]["call_id"],
+                    &initial["output"][0]["name"],
+                    &initial["output"][0]["arguments"],
+                )
+            } else {
+                let call = &initial["choices"][0]["message"]["tool_calls"][0];
+                (
+                    &call["id"],
+                    &call["function"]["name"],
+                    &call["function"]["arguments"],
+                )
+            };
+            assert_eq!(id, "ahp-test-tool-1");
+            assert_eq!(name.as_str(), Some(*expected_name));
+            let arguments = arguments
+                .as_str()
+                .ok_or("tool arguments must be a string")?;
+            assert_eq!(
+                &serde_json::from_str::<Value>(arguments)?,
+                expected_arguments
+            );
+
+            let events = stream(
+                &client,
+                &endpoint,
+                v4_request(responses, prompt, vec![], tools.clone(), true),
+            )
+            .await?;
+            if responses {
+                assert_sequence_numbers(&events);
+                let item = &event(&events, "response.output_item.done")?["item"];
+                assert_eq!(item["call_id"], "ahp-test-tool-1");
+                assert_eq!(item["name"], *expected_name);
+                assert_eq!(function_argument_deltas(&events), arguments);
+                assert_eq!(item["arguments"], arguments);
+            } else {
+                assert_eq!(
+                    events[0].pointer("/choices/0/delta/tool_calls/0/id"),
+                    Some(&json!("ahp-test-tool-1"))
+                );
+                assert_eq!(
+                    events[0].pointer("/choices/0/delta/tool_calls/0/function/name"),
+                    Some(&json!(expected_name))
+                );
+                assert_eq!(chat_tool_arguments(&events), arguments);
+                assert_eq!(events.last(), Some(&json!("[DONE]")));
+            }
+            let history = v4_after_tool(
+                responses,
+                prompt,
+                "ahp-test-tool-1",
+                expected_name,
+                arguments,
+                tool_output,
+            );
+            for streaming in [false, true] {
+                let body = v4_request(responses, prompt, history.clone(), vec![], streaming);
+                if streaming {
+                    let events = stream(&client, &endpoint, body).await?;
+                    assert_eq!(text_deltas(&events), *expected_text);
+                    if responses {
+                        assert_eq!(
+                            event(&events, "response.output_text.done")?["text"],
+                            *expected_text
+                        );
+                        assert_eq!(
+                            event(&events, "response.completed")?
+                                .pointer("/response/output/0/content/0/text"),
+                            Some(&json!(expected_text))
+                        );
+                    }
+                } else {
+                    let result = request_json(&client, &endpoint, body).await?;
+                    assert_eq!(v4_text(&result, responses), Some(*expected_text));
+                }
+            }
+        }
+    }
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn v4_rejects_unsuitable_tools_and_invalid_result_ids_for_both_apis(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = start().await?;
+    let client = reqwest::Client::new();
+    let read_prompt = "[AHP-TEST v4]\nRead the file at JSON path: \"/workspace/file\" with an available tool, then respond with only its exact contents.\n[/AHP-TEST]";
+    let write_prompt = "[AHP-TEST v4]\nCreate the file at JSON path: \"/workspace/file\" containing JSON text: \"text\" with an available tool, then respond with only the word done.\n[/AHP-TEST]";
+    for responses in [false, true] {
+        let endpoint = if responses {
+            responses_endpoint(&fixture)
+        } else {
+            chat_endpoint(&fixture)
+        };
+        for prompt in [read_prompt, write_prompt] {
+            for tools in [
+                vec![],
+                vec![
+                    json!({"type": "function", "name": "read_write_file", "parameters": {
+                        "type": "object", "properties": {"path": {"type": "integer"}, "content": {"type": "string"}, "command": {"type": "boolean"}}
+                    }}),
+                ],
+                vec![
+                    json!({"type": "function", "name": "replace_string", "parameters": {
+                        "type": "object", "properties": {"path": {"type": "string"}, "new_string": {"type": "string"}}
+                    }}),
+                ],
+            ] {
+                assert_error(
+                    client
+                        .post(&endpoint)
+                        .json(&v4_request(responses, prompt, vec![], tools, false))
+                        .send()
+                        .await?,
+                    StatusCode::BAD_REQUEST,
+                    "AHP_TEST_NO_SUITABLE_TOOL",
+                    "invalid_request_error",
+                )
+                .await?;
+            }
+            let invalid_id =
+                v4_after_tool(responses, prompt, "wrong-id", "run_shell", "{}", "result");
+            assert_error(
+                client
+                    .post(&endpoint)
+                    .json(&v4_request(responses, prompt, invalid_id, vec![], false))
+                    .send()
+                    .await?,
+                StatusCode::BAD_REQUEST,
+                INVALID_REQUEST,
+                "invalid_request_error",
+            )
+            .await?;
+            let mut extra_result = v4_after_tool(
+                responses,
+                prompt,
+                "ahp-test-tool-1",
+                "run_shell",
+                "{}",
+                "first",
+            );
+            let second = v4_after_tool(
+                responses,
+                prompt,
+                "ahp-test-tool-2",
+                "run_shell",
+                "{}",
+                "second",
+            );
+            extra_result.extend(second.into_iter().skip(1));
+            assert_error(
+                client
+                    .post(&endpoint)
+                    .json(&v4_request(responses, prompt, extra_result, vec![], false))
+                    .send()
+                    .await?,
+                StatusCode::BAD_REQUEST,
+                INVALID_REQUEST,
+                "invalid_request_error",
+            )
+            .await?;
+        }
+    }
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+fn v4_request(
+    responses: bool,
+    prompt: &str,
+    history: Vec<Value>,
+    tools: Vec<Value>,
+    stream: bool,
+) -> Value {
+    if responses {
+        responses_v2_request(prompt, history, tools, stream)
+    } else {
+        let tools = tools
+            .into_iter()
+            .map(|tool| {
+                json!({"type": "function", "function": {
+                    "name": tool["name"], "parameters": tool["parameters"]
+                }})
+            })
+            .collect();
+        chat_v2_request(prompt, history, tools, stream)
+    }
+}
+
+fn v4_after_tool(
+    responses: bool,
+    prompt: &str,
+    id: &str,
+    name: &str,
+    arguments: &str,
+    output: &str,
+) -> Vec<Value> {
+    let mut history = vec![json!({"role": "user", "content": prompt})];
+    history.extend(if responses {
+        [
+            json!({"type": "function_call", "call_id": id, "name": name, "arguments": arguments}),
+            json!({"type": "function_call_output", "call_id": id, "output": output}),
+        ]
+    } else {
+        [
+            chat_function_call(id, name, arguments),
+            json!({"role": "tool", "tool_call_id": id, "content": output}),
+        ]
+    });
+    history
+}
+
+fn v4_text(result: &Value, responses: bool) -> Option<&str> {
+    result
+        .pointer(if responses {
+            "/output/0/content/0/text"
+        } else {
+            "/choices/0/message/content"
+        })
+        .and_then(Value::as_str)
 }
 
 async fn start() -> Result<RunningFixture, Box<dyn std::error::Error>> {

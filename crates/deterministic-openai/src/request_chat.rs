@@ -7,7 +7,8 @@ use serde_json::Value;
 use super::contract::{code, ContractError};
 use super::request::{
     item_object, non_empty_string, optional_reasoning_effort, parse_tools, request_object,
-    required_array, required_object, required_string, FixtureRequest, RequestMessage, ToolResult,
+    required_array, required_object, required_string, FixtureRequest, RequestMessage,
+    ToolDefinition, ToolResult,
 };
 
 pub(super) fn parse(value: Value) -> Result<FixtureRequest, ContractError> {
@@ -74,16 +75,24 @@ fn parse_message(
         }
         "tool" => {
             reject_role_field(object, index, "tool_calls")?;
-            required_string(object, "content", &format!("messages[{index}].content"))?;
+            let content =
+                required_string(object, "content", &format!("messages[{index}].content"))?
+                    .to_owned();
             Ok(RequestMessage::Tool(ToolResult {
                 tool_call_id: non_empty_string(
                     object,
                     "tool_call_id",
                     &format!("messages[{index}].tool_call_id"),
                 )?,
+                content,
             }))
         }
-        _ => Ok(RequestMessage::Other),
+        _ => Ok(object
+            .get("content")
+            .and_then(Value::as_str)
+            .map_or(RequestMessage::Other, |content| {
+                RequestMessage::Context(content.to_owned())
+            })),
     }
 }
 
@@ -116,9 +125,15 @@ fn parse_tool_call(
     Ok(())
 }
 
-fn tool_name(object: &serde_json::Map<String, Value>, path: &str) -> Result<String, ContractError> {
+fn tool_name(
+    object: &serde_json::Map<String, Value>,
+    path: &str,
+) -> Result<ToolDefinition, ContractError> {
     let function = required_object(object, "function", path)?;
-    non_empty_string(function, "name", &format!("{path}.function.name"))
+    Ok(ToolDefinition {
+        name: non_empty_string(function, "name", &format!("{path}.function.name"))?,
+        parameters: function.get("parameters").cloned().unwrap_or(Value::Null),
+    })
 }
 
 fn reject_role_field(

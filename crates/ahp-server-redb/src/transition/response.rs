@@ -6,7 +6,6 @@ use ahp_types::state::ResponsePart;
 
 use crate::replay::{Draft, TransitionWork};
 use crate::sessions::write_chat;
-use crate::types::now_rfc3339;
 use crate::RedbHostStore;
 
 use super::{active_mut, owned_chat};
@@ -24,7 +23,6 @@ impl RedbHostStore {
             active_mut(&mut chat, &turn_id)?
                 .response_parts
                 .push(part.clone());
-            chat.modified_at = now_rfc3339();
             write_chat(write, &chat)?;
             Ok(TransitionWork::new(
                 (),
@@ -72,7 +70,6 @@ impl RedbHostStore {
             })?;
             markdown.content.push_str(&chunk);
             active.response.push_str(&chunk);
-            chat.modified_at = now_rfc3339();
             write_chat(write, &chat)?;
             Ok(TransitionWork::new(
                 (),

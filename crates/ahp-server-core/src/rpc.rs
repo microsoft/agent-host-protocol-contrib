@@ -108,9 +108,13 @@ pub(crate) async fn handle_text(
     };
     match message {
         JsonRpcMessage::Request(request) => {
-            // The store gives every committed action a monotonic sequence, and
-            // this gate preserves that same order at live peer queues.
-            let _guard = host.inner.publish_lock.lock().await;
+            // Resource I/O does not publish actions; watch events take this gate
+            // separately when committing and broadcasting their ordered envelopes.
+            let _guard = if crate::resources::is_request(&request.method) {
+                None
+            } else {
+                Some(host.inner.publish_lock.lock().await)
+            };
             match commands::process_request(host, peer_id, request.clone()).await {
                 Ok(result) => {
                     host.send_message(
@@ -132,7 +136,12 @@ pub(crate) async fn handle_text(
                         &error.message,
                         error.data,
                     )
-                    .await
+                    .await?;
+                    if error.code == ahp_error_codes::UNSUPPORTED_PROTOCOL_VERSION {
+                        drop(_guard);
+                        host.close_peer(peer_id).await;
+                    }
+                    Ok(())
                 }
             }
         }

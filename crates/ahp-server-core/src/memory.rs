@@ -1,6 +1,9 @@
 //! Complete in-memory [`HostStore`] implementation for embedding and tests.
 
+mod catalog;
+mod chat;
 mod lifecycle;
+mod session;
 mod state;
 mod transitions;
 
@@ -48,12 +51,13 @@ impl MemoryHostStore {
             .lock()
             .map_err(|_| StoreError::Backend("memory store mutex is poisoned".into()))?;
         let mut candidate = data.clone();
-        let (value, drafts) = operation(&mut candidate)?;
+        let (value, mut drafts) = operation(&mut candidate)?;
         if drafts.is_empty() {
             return Err(StoreError::Backend(
                 "state transition must contain an action envelope".into(),
             ));
         }
+        candidate.reconcile_catalogs(&data, &mut drafts);
         let envelopes = candidate.commit(drafts)?;
         *data = candidate;
         Ok(CommittedTransition { envelopes, value })
@@ -72,6 +76,62 @@ impl MemoryHostStore {
 }
 
 impl HostStore for MemoryHostStore {
+    fn change_client_tool(
+        &self,
+        request: crate::ChangeClientTool,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.transact(move |data| {
+            request.apply(data.tool_state_mut(
+                &request.chat,
+                &request.turn_id,
+                &request.tool_call_id,
+            )?)?;
+            Ok((
+                (),
+                vec![Draft::action(
+                    request.chat.clone(),
+                    request.action(),
+                    request.origin.clone(),
+                )],
+            ))
+        })
+    }
+
+    fn pending_messages(&self, chat: &str) -> Result<crate::PendingMessages, StoreError> {
+        self.read(|data| Ok(data.chat(chat)?.pending.clone()))
+    }
+
+    fn change_chat(
+        &self,
+        request: crate::ChangeChat,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        chat::change_chat(self, request)
+    }
+
+    fn change_session(
+        &self,
+        request: crate::store::ChangeSession,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        session::change_session(self, request)
+    }
+
+    fn publish_resource_change(
+        &self,
+        channel: String,
+        action: ahp_types::actions::ResourceWatchChangedAction,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.transact(move |_| {
+            Ok((
+                (),
+                vec![Draft::action(
+                    channel,
+                    StateAction::ResourceWatchChanged(action),
+                    None,
+                )],
+            ))
+        })
+    }
+
     fn server_sequence(&self) -> Result<i64, StoreError> {
         self.read(|data| {
             i64::try_from(data.server_seq)

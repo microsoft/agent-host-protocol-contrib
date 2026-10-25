@@ -111,6 +111,13 @@ pub(crate) async fn execute_tool(
     call: ModelToolCall,
     cancellation: &CancellationToken,
 ) -> Result<(String, String), TurnOutcome> {
+    if let Some(tool) = started
+        .client_tools
+        .iter()
+        .find(|tool| tool.definition.name == call.name)
+    {
+        return super::client::execute_client_tool(host, started, tool, call, cancellation).await;
+    }
     let presentation =
         ToolPresentation::new(call.id.clone(), call.name.clone(), call.arguments.clone())
             .map_err(TurnFailure::tool)

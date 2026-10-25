@@ -212,3 +212,146 @@ fn fixture_session_has_a_pending_tool() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn session_only_subscriber_can_resolve_aggregate_confirmation() -> Result<(), String> {
+    let (host, store, started, presentation, command) = setup()?;
+    let mut peer = host.open_peer().await;
+    host.set_peer_initialized(
+        peer.id(),
+        "session-responder".into(),
+        [started.session.clone()],
+    )
+    .await;
+    let task_host = host.clone();
+    let task_started = started.clone();
+    let task = tokio::spawn(async move {
+        await_approval_for(
+            &task_host,
+            &task_started,
+            presentation,
+            command,
+            &CancellationToken::new(),
+            Duration::from_secs(2),
+        )
+        .await
+    });
+    wait_for_waiter(&host, &started).await?;
+    assert!(!host.peer_is_subscribed(peer.id(), &started.chat).await);
+    let snapshot = store
+        .snapshot(crate::SnapshotRequest {
+            channel: started.session.clone(),
+            model_catalog: crate::ModelCatalog::single("test"),
+            server_tools: Vec::new(),
+        })
+        .map_err(|error| error.to_string())?;
+    let SnapshotState::Session(session) = snapshot.state else {
+        return Err("expected session".into());
+    };
+    let requests = session.input_needed.ok_or("missing aggregate")?;
+    let ahp_types::state::SessionInputRequest::ToolConfirmation(request) = &requests[0] else {
+        return Err("expected confirmation".into());
+    };
+    let id = request.id.clone();
+    let raw = json!({"type":"chat/toolCallConfirmed", "turnId":request.turn_id, "toolCallId":"tool", "approved":false, "reason":"denied"});
+    let action = serde_json::from_value(raw.clone()).map_err(|error| error.to_string())?;
+    confirm_tool(&host, peer.id(), &request.chat, raw, action, None).await;
+    assert!(matches!(
+        task.await.map_err(|error| error.to_string())?,
+        Ok(super::ApprovalDecision::Denied(_))
+    ));
+    let frame = timeout(Duration::from_secs(1), async {
+        loop {
+            let text = peer.recv().await.ok_or("peer closed")?;
+            let value: serde_json::Value =
+                serde_json::from_str(&text).map_err(|error| error.to_string())?;
+            if value
+                .pointer("/params/action/type")
+                .and_then(serde_json::Value::as_str)
+                == Some("session/inputNeededRemoved")
+            {
+                return Ok::<_, String>(value);
+            }
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    assert_eq!(
+        frame.pointer("/params/action/id"),
+        Some(&serde_json::Value::String(id))
+    );
+    let snapshot = store
+        .snapshot(crate::SnapshotRequest {
+            channel: started.session.clone(),
+            model_catalog: crate::ModelCatalog::single("test"),
+            server_tools: Vec::new(),
+        })
+        .map_err(|error| error.to_string())?;
+    let SnapshotState::Session(session) = snapshot.state else {
+        return Err("expected session".into());
+    };
+    assert!(session.input_needed.is_none());
+    host.close_peer(peer.id()).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unrelated_peers_cannot_confirm_or_persist_command_approval() -> Result<(), String> {
+    let (host, store, started, presentation, command) = setup()?;
+    let cancellation = CancellationToken::new();
+    let task_host = host.clone();
+    let task_started = started.clone();
+    let task_command = command.clone();
+    let task_cancellation = cancellation.clone();
+    let task = tokio::spawn(async move {
+        await_approval_for(
+            &task_host,
+            &task_started,
+            presentation,
+            task_command,
+            &task_cancellation,
+            Duration::from_secs(60),
+        )
+        .await
+    });
+    wait_for_waiter(&host, &started).await?;
+    for subscriptions in [Vec::new(), vec!["ahp-session:/unrelated".into()]] {
+        let peer = host.open_peer().await;
+        host.set_peer_initialized(peer.id(), "unrelated-client".into(), subscriptions)
+            .await;
+        let raw = json!({
+            "type":"chat/toolCallConfirmed", "turnId":started.turn_id,
+            "toolCallId":"tool", "approved":true, "selectedOptionId":"always-allow-command"
+        });
+        let action = serde_json::from_value(raw.clone()).map_err(|error| error.to_string())?;
+        let before = store.server_sequence().map_err(|error| error.to_string())?;
+        confirm_tool(&host, peer.id(), &started.chat, raw, action, None).await;
+        let crate::ActionReplay::Replay(events) = store
+            .replay_since(before)
+            .map_err(|error| error.to_string())?
+        else {
+            return Err("expected rejection replay".into());
+        };
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].rejection_reason.as_deref(),
+            Some("tool confirmations require a subscribed chat or owning session")
+        );
+        assert!(!store
+            .is_command_allowed(&command)
+            .map_err(|error| error.to_string())?);
+        let key = crate::ApprovalKey {
+            chat: started.chat.clone(),
+            turn_id: started.turn_id.clone(),
+            tool_call_id: "tool".into(),
+        };
+        assert!(host.inner.approvals.lock().await.contains_key(&key));
+        host.close_peer(peer.id()).await;
+    }
+    cancellation.cancel();
+    assert!(matches!(
+        task.await.map_err(|error| error.to_string())?,
+        Err(TurnOutcome::Cancelled)
+    ));
+    Ok(())
+}

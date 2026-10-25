@@ -1,5 +1,7 @@
 //! Logical peers, bounded fan-out, and host construction.
 
+mod session;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -77,10 +79,12 @@ pub(crate) struct Inner {
     pub(crate) model: Arc<dyn AgentModel>,
     pub(crate) model_catalog: ModelCatalog,
     pub(crate) profile: Arc<dyn AgentProfile>,
+    pub(crate) resources: crate::resources::Resources,
     pub(crate) shutdown: Shutdown,
     pub(crate) peers: Mutex<HashMap<u64, PeerState>>,
     pub(crate) cancellations: Mutex<HashMap<TurnKey, CancellationToken>>,
     pub(crate) approvals: Mutex<HashMap<ApprovalKey, PendingApproval>>,
+    pub(crate) client_tools: Mutex<HashMap<ApprovalKey, crate::turns::PendingClientTool>>,
     pub(crate) publish_lock: Mutex<()>,
     pub(crate) turn_tasks: Mutex<JoinSet<()>>,
     next_peer: AtomicU64,
@@ -100,6 +104,7 @@ pub(crate) struct TurnKey {
 }
 
 pub(crate) struct PendingApproval {
+    pub(crate) session: Uri,
     pub(crate) waiter_id: uuid::Uuid,
     pub(crate) presentation: crate::presentation::ToolPresentation,
     pub(crate) command: workspace_agent_tools::ExactCommandApproval,
@@ -168,10 +173,12 @@ impl CoreHost {
                 model,
                 model_catalog,
                 profile,
+                resources: crate::resources::Resources::default(),
                 shutdown: Shutdown(CancellationToken::new()),
                 peers: Mutex::new(HashMap::new()),
                 cancellations: Mutex::new(HashMap::new()),
                 approvals: Mutex::new(HashMap::new()),
+                client_tools: Mutex::new(HashMap::new()),
                 publish_lock: Mutex::new(()),
                 turn_tasks: Mutex::new(JoinSet::new()),
                 next_peer: AtomicU64::new(1),
@@ -193,7 +200,9 @@ impl CoreHost {
     /// waiters, and profile executions are joined directly.
     pub async fn shutdown_and_wait(&self) -> Result<(), CoreHostError> {
         self.inner.shutdown.cancel();
-        let _publication = self.inner.publish_lock.lock().await;
+        self.inner.resources.clear();
+        // Wait for in-flight starts, then release the gate needed by cancelled turn tasks.
+        drop(self.inner.publish_lock.lock().await);
         let mut tasks = self.inner.turn_tasks.lock().await;
         let mut failure = None;
         while let Some(result) = tasks.join_next().await {
@@ -227,13 +236,33 @@ impl CoreHost {
 
     /// Removes peer subscriptions and releases its bounded outbound sender.
     pub async fn close_peer(&self, peer_id: u64) {
-        self.inner.peers.lock().await.remove(&peer_id);
+        let client_id = self
+            .inner
+            .peers
+            .lock()
+            .await
+            .remove(&peer_id)
+            .and_then(|peer| peer.client_id);
+        self.inner.resources.close_peer(peer_id);
+        if let Some(client_id) = client_id {
+            self.remove_active_client(&client_id, None).await;
+        }
     }
 
     /// Removes a single subscription from one peer.
     pub async fn unsubscribe(&self, peer_id: u64, channel: &str) {
-        if let Some(peer) = self.inner.peers.lock().await.get_mut(&peer_id) {
-            peer.subscriptions.remove(channel);
+        let client_id = {
+            let mut peers = self.inner.peers.lock().await;
+            peers.get_mut(&peer_id).and_then(|peer| {
+                peer.subscriptions.remove(channel);
+                peer.client_id.clone()
+            })
+        };
+        self.inner.resources.unsubscribe(peer_id, channel);
+        if let Some(client_id) = client_id {
+            if channel.starts_with("ahp-session:/") {
+                self.remove_active_client(&client_id, Some(channel)).await;
+            }
         }
     }
 
@@ -263,8 +292,14 @@ impl CoreHost {
         let delivered = peers
             .get(&peer_id)
             .is_some_and(|peer| peer.sender.try_send(text).is_ok());
-        if !delivered {
-            peers.remove(&peer_id);
+        let evicted = if delivered {
+            None
+        } else {
+            peers.remove(&peer_id)
+        };
+        drop(peers);
+        if let Some(peer) = evicted {
+            self.schedule_peer_cleanup(peer_id, peer.client_id);
         }
     }
 
@@ -272,14 +307,32 @@ impl CoreHost {
     pub(crate) async fn fanout<T>(&self, transition: &CommittedTransition<T>) {
         for envelope in &transition.envelopes {
             self.broadcast_action(envelope).await;
-            if matches!(envelope.action, StateAction::SessionChatUpdated(_)) {
+            if envelope.rejection_reason.is_none()
+                && matches!(
+                    envelope.action,
+                    StateAction::SessionChatUpdated(_)
+                        | StateAction::SessionChatAdded(_)
+                        | StateAction::SessionChatRemoved(_)
+                        | StateAction::SessionTitleChanged(_)
+                        | StateAction::SessionIsReadChanged(_)
+                        | StateAction::SessionIsArchivedChanged(_)
+                )
+            {
                 if let Ok(summary) = self.inner.store.session_summary(&envelope.channel) {
+                    let changes = match &envelope.action {
+                        StateAction::SessionTitleChanged(_) => json!({ "title": summary.title }),
+                        StateAction::SessionIsReadChanged(_)
+                        | StateAction::SessionIsArchivedChanged(_) => {
+                            json!({ "status": summary.status })
+                        }
+                        _ => {
+                            json!({ "status": summary.status, "modifiedAt": summary.modified_at, "chats": summary.chats, "defaultChat": summary.default_chat })
+                        }
+                    };
                     self.broadcast_notification(
                         ROOT_RESOURCE_URI,
                         "root/sessionSummaryChanged",
-                        json!({ "channel": ROOT_RESOURCE_URI, "session": envelope.channel, "changes": {
-                            "status": summary.status, "modifiedAt": summary.modified_at,
-                        }}),
+                        json!({ "channel": ROOT_RESOURCE_URI, "session": envelope.channel, "changes": changes }),
                     ).await;
                 }
             }
@@ -306,9 +359,19 @@ impl CoreHost {
                 Err(_) => return,
             };
         let mut peers = self.inner.peers.lock().await;
-        peers.retain(|_, peer| {
-            !peer.subscriptions.contains(channel) || peer.sender.try_send(frame.clone()).is_ok()
+        let mut evicted = Vec::new();
+        peers.retain(|id, peer| {
+            let retained = !peer.subscriptions.contains(channel)
+                || peer.sender.try_send(frame.clone()).is_ok();
+            if !retained {
+                evicted.push((*id, peer.client_id.clone()));
+            }
+            retained
         });
+        drop(peers);
+        for (peer_id, client_id) in evicted {
+            self.schedule_peer_cleanup(peer_id, client_id);
+        }
     }
 
     pub(crate) async fn peer_initialized(&self, peer_id: u64) -> bool {
@@ -338,7 +401,10 @@ impl CoreHost {
         if let Some(peer) = self.inner.peers.lock().await.get_mut(&peer_id) {
             peer.initialized = true;
             peer.client_id = Some(client_id);
-            peer.subscriptions.extend(subscriptions);
+            for channel in subscriptions {
+                self.inner.resources.subscribe(peer_id, &channel);
+                peer.subscriptions.insert(channel);
+            }
         }
     }
 

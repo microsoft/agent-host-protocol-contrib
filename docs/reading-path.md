@@ -55,5 +55,6 @@ For API selection and streaming conversion, start at
 then follow its connection manager and store under `src/ahp`.
 
 Use the [architecture](architecture.md) for the boundaries and transition
-diagrams, and the [conformance README](../tools/ahp-conformance/README.md) to
-see the externally observable behavior.
+diagrams, and the [conformance README](../tools/ahp-conformance/README.md) for
+the YAML-configured TypeScript CLI and its capability-gated black-box probes of
+externally observable behavior.

@@ -104,6 +104,44 @@ fn parses_fragmented_sse_lines_and_responses_events() -> TestResult {
 }
 
 #[tokio::test]
+async fn initialize_negotiates_compatible_versions_and_rejects_malformed_offers() -> TestResult {
+    let fixture = start_fixture().await?;
+    let host = start_host(&fixture).await?;
+    for (versions, expected) in [
+        (json!(["0.9.0", "1.0.0"]), Some("1.0.0")),
+        (json!(["1.0.0", "1.2.3", "1.1.9", "2.0.0"]), Some("1.2.3")),
+        (json!(["0.9.7", "0.10.0"]), Some("0.9.7")),
+        (json!(["1.0.0", "invalid"]), None),
+        (json!(["01.0.0"]), None),
+        (json!(["1.0.0", 1]), None),
+    ] {
+        let (mut socket, _) = connect_async(host.websocket_url()).await?;
+        let reply = request(
+            &mut socket,
+            1,
+            "initialize",
+            json!({
+                "channel": "ahp-root://", "clientId": "negotiation-test",
+                "protocolVersions": versions,
+            }),
+        )
+        .await?;
+        if let Some(version) = expected {
+            assert_eq!(reply["result"]["protocolVersion"], version);
+        } else {
+            assert_eq!(
+                reply["error"]["code"],
+                ahp_types::errors::json_rpc_error_codes::INVALID_PARAMS
+            );
+        }
+        socket.close(None).await?;
+    }
+    host.shutdown().await;
+    fixture.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn unsupported_protocol_version_reports_supported_versions() -> TestResult {
     let fixture = start_fixture().await?;
     let host = start_host(&fixture).await?;
@@ -305,7 +343,7 @@ async fn initialization_response_precedes_concurrent_action_delivery() -> TestRe
                 "params": {
                     "channel": "ahp-root://",
                     "clientId": "initializer",
-                    "protocolVersions": ["0.9.0"],
+                    "protocolVersions": ["1.0.0"],
                     "initialSubscriptions": [CHAT_URI],
                 },
             })
@@ -561,7 +599,7 @@ async fn initialize(
         json!({
             "channel": "ahp-root://",
             "clientId": client_id,
-            "protocolVersions": ["0.9.0"],
+            "protocolVersions": ["1.0.0"],
             "initialSubscriptions": subscriptions,
         }),
     )

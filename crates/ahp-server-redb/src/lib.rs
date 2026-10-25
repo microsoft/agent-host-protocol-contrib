@@ -6,10 +6,12 @@
 #![forbid(unsafe_code)]
 
 mod approvals;
+mod catalog;
 mod db;
 mod queries;
 mod recovery;
 mod replay;
+mod session_state;
 mod sessions;
 mod tables;
 mod transition;
@@ -51,6 +53,48 @@ impl RedbHostStore {
 }
 
 impl HostStore for RedbHostStore {
+    fn change_client_tool(
+        &self,
+        request: ahp_server_core::ChangeClientTool,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.change_client_tool_transition(request)
+    }
+
+    fn pending_messages(&self, chat: &str) -> Result<ahp_server_core::PendingMessages, StoreError> {
+        self.pending_messages_for(chat)
+    }
+
+    fn change_chat(
+        &self,
+        request: ahp_server_core::ChangeChat,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.change_chat_transition(request)
+    }
+
+    fn change_session(
+        &self,
+        request: ahp_server_core::ChangeSession,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.change_session_transition(request)
+    }
+
+    fn publish_resource_change(
+        &self,
+        channel: Uri,
+        action: ahp_types::actions::ResourceWatchChangedAction,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.commit_transition(move |_| {
+            Ok(TransitionWork::new(
+                (),
+                vec![Draft::action(
+                    channel,
+                    StateAction::ResourceWatchChanged(action),
+                    None,
+                )],
+            ))
+        })
+    }
+
     fn server_sequence(&self) -> Result<i64, StoreError> {
         let database = self.database()?;
         let read = database.get()?.begin_read().map_err(backend)?;
@@ -216,6 +260,10 @@ impl HostStore for RedbHostStore {
 }
 
 #[cfg(test)]
+mod context_tools_tests;
+#[cfg(test)]
 mod model_config_tests;
+#[cfg(test)]
+mod session_state_tests;
 #[cfg(test)]
 mod tests;

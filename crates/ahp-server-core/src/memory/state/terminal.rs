@@ -4,9 +4,9 @@ use ahp_types::actions::{
     ChatErrorAction, ChatTurnCancelledAction, ChatTurnCompleteAction, StateAction,
 };
 use ahp_types::state::{ErrorResponsePart, ResponsePart, ToolCallState, TurnState};
-use chrono::Utc;
+use chrono::{DateTime, SecondsFormat, Utc};
 
-use super::{now, tool_state_id, Data, StoredTurn};
+use super::{Data, StoredTurn};
 use crate::memory::transitions::summary_draft;
 use crate::memory::Draft;
 use crate::store::{FinishTurn, StoreConflict, StoreError};
@@ -60,12 +60,17 @@ impl Data {
         }
         let duration = Utc::now()
             .timestamp_millis()
-            .saturating_sub(active.started_millis);
+            .saturating_sub(active.started_millis)
+            .max(0);
+        let modified_at = DateTime::parse_from_rfc3339(&active.started_at)
+            .map_err(|error| StoreError::Backend(error.to_string()))?
+            .checked_add_signed(chrono::TimeDelta::milliseconds(duration))
+            .ok_or_else(|| StoreError::Backend("turn timestamp overflow".into()))?
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
         let (state, error) = terminal.unwrap_or((TurnState::Complete, None));
         let mut parts = active.response_parts;
-        if state != TurnState::Complete {
-            terminalize_tools(&mut parts)?;
-        }
+        terminalize_tools(&mut parts)?;
         let error_part = error.clone().map(|error| ErrorResponsePart {
             error,
             resumable: None,
@@ -88,7 +93,7 @@ impl Data {
         if chat.turns.len() > 256 {
             chat.turns.remove(0);
         }
-        chat.modified_at = now();
+        chat.modified_at = modified_at;
         let action = terminal_action(&turn_id, duration, state, error_part)?;
         let summary = self.chat_summary(self.chat(&chat_uri)?);
         Ok((
@@ -130,54 +135,48 @@ fn terminal_action(
 }
 
 fn terminalize_tools(parts: &mut [ResponsePart]) -> Result<(), StoreError> {
-    for part in parts.iter_mut() {
+    for part in parts {
         let ResponsePart::ToolCall(tool) = part else {
             continue;
         };
         if matches!(
-            tool.tool_call,
-            ToolCallState::Streaming(_)
-                | ToolCallState::PendingConfirmation(_)
-                | ToolCallState::Running(_)
+            &tool.tool_call,
+            ToolCallState::Completed(_) | ToolCallState::Cancelled(_)
         ) {
-            let value = serde_json::json!({
-                "status": "cancelled",
-                "toolCallId": tool_state_id(&tool.tool_call),
-                "toolName": tool_name(&tool.tool_call),
-                "displayName": tool_display(&tool.tool_call),
-                "invocationMessage": "Tool call was interrupted.",
-                "reason": "skipped",
-                "reasonMessage": "Tool call was interrupted."
-            });
-            tool.tool_call = serde_json::from_value(value)
-                .map_err(|error| StoreError::Backend(error.to_string()))?;
+            continue;
         }
+        let streaming = matches!(&tool.tool_call, ToolCallState::Streaming(_));
+        let mut value = serde_json::to_value(&tool.tool_call)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| StoreError::Backend("tool call must be an object".into()))?;
+        object.retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "toolCallId"
+                    | "toolName"
+                    | "displayName"
+                    | "intention"
+                    | "contributor"
+                    | "_meta"
+                    | "invocationMessage"
+                    | "toolInput"
+            )
+        });
+        if streaming {
+            object.remove("toolInput");
+        }
+        object
+            .entry("invocationMessage")
+            .or_insert_with(|| serde_json::Value::String(String::new()));
+        object.insert(
+            "status".into(),
+            serde_json::Value::String("cancelled".into()),
+        );
+        object.insert("reason".into(), serde_json::Value::String("skipped".into()));
+        tool.tool_call = serde_json::from_value(value)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
     }
     Ok(())
-}
-
-fn tool_name(state: &ToolCallState) -> String {
-    match state {
-        ToolCallState::Streaming(item) => item.tool_name.clone(),
-        ToolCallState::PendingConfirmation(item) => item.tool_name.clone(),
-        ToolCallState::Running(item) => item.tool_name.clone(),
-        ToolCallState::AuthRequired(item) => item.tool_name.clone(),
-        ToolCallState::PendingResultConfirmation(item) => item.tool_name.clone(),
-        ToolCallState::Completed(item) => item.tool_name.clone(),
-        ToolCallState::Cancelled(item) => item.tool_name.clone(),
-        ToolCallState::Unknown(_) => String::new(),
-    }
-}
-
-fn tool_display(state: &ToolCallState) -> String {
-    match state {
-        ToolCallState::Streaming(item) => item.display_name.clone(),
-        ToolCallState::PendingConfirmation(item) => item.display_name.clone(),
-        ToolCallState::Running(item) => item.display_name.clone(),
-        ToolCallState::AuthRequired(item) => item.display_name.clone(),
-        ToolCallState::PendingResultConfirmation(item) => item.display_name.clone(),
-        ToolCallState::Completed(item) => item.display_name.clone(),
-        ToolCallState::Cancelled(item) => item.display_name.clone(),
-        ToolCallState::Unknown(_) => String::new(),
-    }
 }

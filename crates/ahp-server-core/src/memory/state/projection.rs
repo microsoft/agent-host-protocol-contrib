@@ -16,11 +16,13 @@ impl Data {
             resource: chat.uri.clone(),
             title: "New chat".into(),
             status: chat_status(chat),
-            activity: chat_activity(chat),
+            activity: None,
             modified_at: chat.modified_at.clone(),
+            changes: None,
             origin: None,
+            movable: None,
             interactivity: None,
-            working_directories: None,
+            working_directories: chat.working_directories.clone(),
         }
     }
 
@@ -56,11 +58,9 @@ impl Data {
         };
         SessionSummary {
             provider: session.provider.clone(),
-            title: "New OpenAI-compatible session".into(),
-            status,
-            activity: needs_input
-                .then(|| "Waiting for input".into())
-                .or_else(|| primary.and_then(chat_activity)),
+            title: session.title.clone(),
+            status: (status & 0x1f) | session.status_flags,
+            activity: None,
             origin: None,
             project: None,
             working_directories: Some(vec![session.workspace.clone()]),
@@ -70,6 +70,13 @@ impl Data {
             modified_at,
             changes: None,
             meta: None,
+            chats: Some(crate::catalog::compact_chats(
+                &chats
+                    .iter()
+                    .map(|chat| self.chat_summary(chat))
+                    .collect::<Vec<_>>(),
+            )),
+            default_chat: session.chats.first().cloned(),
         }
     }
 
@@ -154,7 +161,7 @@ fn session_snapshot(
             },
             creation_error: None,
             server_tools: Some(request.server_tools),
-            active_clients: Vec::new(),
+            active_clients: session.active_clients.clone(),
             chats,
             default_chat: session.chats.first().cloned(),
             config: Some(
@@ -169,7 +176,7 @@ fn session_snapshot(
             ),
             customizations: None,
             changesets: None,
-            input_needed: None,
+            input_needed: (!session.input_needed.is_empty()).then(|| session.input_needed.clone()),
             meta: None,
         })),
     }
@@ -180,45 +187,42 @@ fn chat_state(chat: &Chat) -> ChatState {
         resource: chat.uri.clone(),
         title: "New chat".into(),
         status: chat_status(chat),
-        activity: chat_activity(chat),
+        activity: None,
         modified_at: chat.modified_at.clone(),
+        changes: None,
         origin: None,
+        movable: None,
         interactivity: None,
-        working_directories: None,
+        working_directories: chat.working_directories.clone(),
+        changesets: None,
+        background_work: None,
+        canvases: None,
         turns: chat.turns.iter().map(stored_turn).collect(),
         turns_next_cursor: None,
         active_turn: chat.active.as_ref().map(active_turn),
-        steering_message: None,
-        queued_messages: None,
+        steering_message: chat.pending.steering.clone(),
+        queued_messages: (!chat.pending.entries.is_empty()).then(|| chat.pending.entries.clone()),
         draft: chat.draft.clone(),
         meta: None,
     }
 }
 
 fn chat_status(chat: &Chat) -> u32 {
-    if chat.active.as_ref().is_some_and(active_needs_input) {
+    let activity = if chat.active.as_ref().is_some_and(active_needs_input) {
         SessionStatus::InputNeeded.bits()
     } else if chat.active.is_some() {
         SessionStatus::InProgress.bits()
-    } else if chat
-        .turns
-        .last()
-        .is_some_and(|turn| turn.state == TurnState::Error)
+    } else if !chat.status_reset
+        && chat
+            .turns
+            .last()
+            .is_some_and(|turn| turn.state == TurnState::Error)
     {
         SessionStatus::Error.bits()
     } else {
         SessionStatus::Idle.bits()
-    }
-}
-
-fn chat_activity(chat: &Chat) -> Option<String> {
-    chat.active.as_ref().map(|active| {
-        if active_needs_input(active) {
-            "Waiting for input".into()
-        } else {
-            "Waiting for model response".into()
-        }
-    })
+    };
+    activity | chat.status_flags
 }
 
 fn active_needs_input(active: &Active) -> bool {

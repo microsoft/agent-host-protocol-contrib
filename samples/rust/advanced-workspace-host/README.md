@@ -24,6 +24,21 @@ repository [reading path](../../../docs/reading-path.md). For the component
 boundaries and commit-before-fanout rule, read the
 [architecture](../../../docs/architecture.md) next.
 
+Session rename, read/unread, and archive/unarchive actions are durable and
+update root catalog subscribers. Sessions also support eager active-client
+registration and membership updates, with cleanup on unsubscribe/disconnect.
+Optional activity strings are omitted consistently; status bits carry lifecycle
+progress. Session pagination omits the final cursor, and incompatible protocol
+versions receive the negotiation error before the WebSocket closes.
+
+Chats support synchronized drafts, a single pending steering message, an
+independent reorderable queue, and history truncation (AHP 1.0.0). Queued messages start automatically while
+idle or after a turn ends; steering is injected at model-request boundaries and
+remains pending while idle. `createChat.initialMessage` starts the new chat's
+first turn. Pending state is durable, and truncation clears provider continuation
+state before later model requests. Source-based chats and per-chat workspace
+overrides remain unsupported.
+
 ## Run
 
 The fastest complete local stack is one command:
@@ -132,6 +147,15 @@ also accept commas. Browser upgrades are same-origin by default, while native
 clients without an `Origin` header remain accepted. Additional allowed origins
 are additive, never a replacement for same-origin protection.
 
+The host supports the core `resource*` filesystem requests and
+`createResourceWatch` for local `file:` URIs within these workspace roots.
+Resource writes support UTF-8/base64, truncate/append/insert byte offsets,
+`createOnly`, and `ifMatch` etags. Access is pre-granted within the configured
+roots; `resourceRequest` cannot grant access outside them, including through
+symlinks. Watches support recursive discovery and include/exclude globs, emit
+batched actions on `ahp-resource-watch:` subscriptions, and are released when
+the last subscriber disconnects or unsubscribes.
+
 After every successful start the CLI prints `AHP WebSocket: <ws URL>`. If a
 usable frontend is present, it prints `Chat UI: <http URL>/`. Otherwise the
 Chat UI line truthfully reports that it is unavailable and gives the same HTTP
@@ -224,5 +248,16 @@ cargo clippy -p advanced-workspace-host --all-targets --all-features -- -D warni
 cargo test -p advanced-workspace-host
 ```
 
-Then run the black-box [conformance runner](../../../tools/ahp-conformance/README.md)
-with `cargo run -p ahp-conformance -- --local-fixture`.
+Then run the TypeScript black-box
+[conformance runner](../../../tools/ahp-conformance/README.md) from the repository
+root with Node 24+ (no build step):
+
+```bash
+cd tools/ahp-conformance
+npm install
+node src/cli.ts examples/advanced-workspace-host.yml
+```
+
+The example YAML config launches `advanced-workspace-host --demo` with its
+embedded deterministic fixture. See the runner README for custom targets,
+authentication, filters, and HTML/CLI reports with optional JSON results.

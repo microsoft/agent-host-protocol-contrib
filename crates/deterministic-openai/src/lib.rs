@@ -18,6 +18,7 @@ mod v2;
 mod v2_json;
 mod v2_state;
 mod v3;
+mod v4;
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;

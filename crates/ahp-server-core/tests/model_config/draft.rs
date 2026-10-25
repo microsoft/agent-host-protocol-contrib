@@ -16,7 +16,7 @@ async fn persists_valid_drafts_and_retains_them_when_a_turn_is_rejected(
         "initialize",
         json!({
             "channel": "ahp-root://", "clientId": "draft-client",
-            "protocolVersions": ["0.9.0"], "initialSubscriptions": ["ahp-root://"]
+            "protocolVersions": ["1.0.0"], "initialSubscriptions": ["ahp-root://"]
         }),
     )
     .await?;

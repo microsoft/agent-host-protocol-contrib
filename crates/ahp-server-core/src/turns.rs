@@ -1,10 +1,13 @@
 //! Turn orchestration split into routing, model, tool, and approval services.
 
+mod client;
 mod confirmation;
 mod dispatch;
 mod draft;
 mod history;
 mod model;
+mod pending;
+mod session;
 mod tool;
 
 use ahp_types::actions::StateAction;
@@ -19,7 +22,8 @@ const MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_TOOL_CALLS_PER_TURN: usize = 8;
 const APPROVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-pub(crate) use dispatch::dispatch_action;
+pub(crate) use client::{fail_client_tools_locked, PendingClientTool};
+pub(crate) use dispatch::{dispatch_action, start_turn_locked};
 
 /// Decision delivered to an in-memory tool approval waiter.
 pub(crate) enum ApprovalDecision {

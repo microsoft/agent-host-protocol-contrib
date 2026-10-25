@@ -250,6 +250,8 @@ impl ModelCatalog {
                 enum_descriptions: None,
                 read_only: None,
                 items: None,
+                min_items: None,
+                max_items: None,
                 properties: Some(model_selection_properties(&self.models, thinking_property)),
                 required: Some(vec!["id".into()]),
                 additional_properties: None,

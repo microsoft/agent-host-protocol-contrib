@@ -119,11 +119,15 @@ for endpoints without a model catalog.
 
 ## Test tools and validation
 
-[`deterministic-openai`](tools/deterministic-openai/README.md) supplies stable
-v1 text/error and v2 sequential-tool contracts. The
-[`ahp-conformance`](tools/ahp-conformance/README.md) runner distinguishes
-protocol-core, text-chat, local fixture, workspace-tool, model-streaming, and
-model-configuration scopes.
+[`deterministic-openai`](tools/deterministic-openai/README.md) supplies
+versioned text/error and tool fixtures, including v4 recall/read-file/write-file
+directives. The Node 24+ TypeScript
+[`ahp-conformance`](tools/ahp-conformance/README.md) CLI runs granular black-box
+WebSocket JSON-RPC probes across Transport & lifecycle, Root & sessions,
+Chats & turns, Resources, Tools & permissions, and Authentication. Tests for
+capabilities the host does not advertise are skipped; model-backed probes use
+natural-language prompts with embedded `[AHP-TEST vN]` directives for real models
+and the deterministic fixture. See its README for configuration and reports.
 
 Run Rust checks once from the repository root, then frontend and plugin checks:
 
@@ -143,8 +147,13 @@ python -c 'import json; json.load(open("plugins/ahp-development/plugin.json"))'
 find plugins/ahp-development/skills -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/SKILL.md' \; -print
 ```
 
-For an end-to-end local stack, run:
+For an end-to-end local stack with Node 24+ (no build step), run:
 
-```powershell
-cargo run -p ahp-conformance -- --local-fixture
+```bash
+cd tools/ahp-conformance
+npm install
+node src/cli.ts examples/advanced-workspace-host.yml
 ```
+
+This config launches `advanced-workspace-host --demo`, which embeds the
+deterministic fixture. `npm start -- …` is also supported.

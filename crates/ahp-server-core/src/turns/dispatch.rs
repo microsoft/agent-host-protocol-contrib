@@ -33,9 +33,24 @@ pub(crate) async fn dispatch_action(host: &CoreHost, peer_id: u64, params: Value
     {
         "chat/turnStarted" => start_turn(host, &channel, action_value, action, origin).await,
         "chat/turnCancelled" => cancel_turn(host, &channel, action_value, action, origin).await,
+        "chat/isReadChanged"
+        | "chat/pendingMessageSet"
+        | "chat/pendingMessageRemoved"
+        | "chat/queuedMessagesReordered"
+        | "chat/truncated" => super::pending::change_chat(host, &channel, action, origin).await,
         "chat/draftChanged" => change_draft(host, &channel, action_value, action, origin).await,
+        "session/titleChanged"
+        | "session/isReadChanged"
+        | "session/isArchivedChanged"
+        | "session/activeClientSet"
+        | "session/activeClientRemoved" => {
+            super::session::change_session(host, peer_id, &channel, action, origin).await
+        }
         "session/configChanged" => {
             change_session_config(host, peer_id, &channel, action_value, action, origin).await
+        }
+        "chat/toolCallComplete" | "chat/toolCallContentChanged" => {
+            super::client::change_client_tool(host, peer_id, &channel, action, origin).await
         }
         "chat/toolCallConfirmed" => {
             confirm_tool(host, peer_id, &channel, action_value, action, origin).await
@@ -91,64 +106,66 @@ async fn start_turn(
         }
     };
     let _guard = host.inner.publish_lock.lock().await;
-    if host.inner.shutdown.token().is_cancelled() {
-        return;
+    if let Err(error) = start_turn_locked(host, channel, start, origin.clone()).await {
+        drop(_guard);
+        reject(host, channel.into(), action, origin, error).await;
     }
-    let effective_selection = match start.message.model.clone() {
+}
+
+pub(crate) async fn start_turn_locked(
+    host: &CoreHost,
+    channel: &str,
+    mut start: ChatTurnStartedAction,
+    origin: Option<ahp_types::actions::ActionOrigin>,
+) -> Result<(), String> {
+    if host.inner.shutdown.token().is_cancelled() {
+        return Err("host is shutting down".into());
+    }
+    if start.turn_id.trim().is_empty()
+        || !matches!(start.message.origin.kind, MessageKind::User)
+        || chrono::DateTime::parse_from_rfc3339(&start.started_at).is_err()
+    {
+        return Err("turn requires a non-empty id, valid startedAt, and a user message".into());
+    }
+    let selection = match start.message.model.clone() {
         Some(selection) => selection,
-        None => match host
+        None => host
             .inner
             .store
             .model_selection_for_chat(channel, host.inner.model_catalog.default_selection.as_ref())
-        {
-            Ok(selection) => selection,
-            Err(error) => {
-                drop(_guard);
-                reject(host, channel.into(), action, origin, error).await;
-                return;
-            }
-        },
+            .map_err(|error| error.to_string())?,
     };
-    if let Err(error) = host
-        .inner
+    host.inner
         .model_catalog
-        .validate_selection(&effective_selection)
-    {
-        drop(_guard);
-        reject(host, channel.into(), action, origin, error).await;
-        return;
-    }
-    let mut start = start;
-    start.message.model = Some(effective_selection);
-    match host.inner.store.start_turn(TurnStart {
-        chat: channel.into(),
-        action: start,
-        origin: origin.clone(),
-        legacy_default_selection: host.inner.model_catalog.default_selection.clone(),
-    }) {
-        Ok(transition) => {
-            host.fanout(&transition).await;
-            let started = transition.value;
-            let cancellation = CancellationToken::new();
-            host.inner.cancellations.lock().await.insert(
-                TurnKey {
-                    chat: started.chat.clone(),
-                    turn_id: started.turn_id.clone(),
-                },
-                cancellation.clone(),
-            );
-            let task_host = host.clone();
-            host.inner
-                .turn_tasks
-                .lock()
-                .await
-                .spawn(async move { run_turn(task_host, started, cancellation).await });
-        }
-        Err(error) => {
-            drop(_guard);
-            reject(host, channel.into(), action, origin, error).await;
-        }
-    }
+        .validate_selection(&selection)
+        .map_err(|error| error.to_string())?;
+    start.message.model = Some(selection);
+    let transition = host
+        .inner
+        .store
+        .start_turn(TurnStart {
+            chat: channel.into(),
+            action: start,
+            origin,
+            legacy_default_selection: host.inner.model_catalog.default_selection.clone(),
+        })
+        .map_err(|error| error.to_string())?;
+    host.fanout(&transition).await;
+    let started = transition.value;
+    let cancellation = CancellationToken::new();
+    host.inner.cancellations.lock().await.insert(
+        TurnKey {
+            chat: started.chat.clone(),
+            turn_id: started.turn_id.clone(),
+        },
+        cancellation.clone(),
+    );
+    host.inner
+        .turn_tasks
+        .lock()
+        .await
+        .spawn(run_turn(host.clone(), started, cancellation));
+    Ok(())
 }
 
 async fn change_session_config(
@@ -266,7 +283,10 @@ async fn cancel_turn(
         turn_id,
         origin: origin.clone(),
     }) {
-        Ok(transition) => host.fanout(&transition).await,
+        Ok(transition) => {
+            host.fanout(&transition).await;
+            let _ = super::pending::start_next_queued_locked(host, channel).await;
+        }
         Err(error) => {
             drop(_guard);
             reject(host, channel.into(), action, origin, error).await;

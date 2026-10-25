@@ -13,6 +13,12 @@ use crate::tables::TURN_HISTORY_LIMIT;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PersistedSession {
+    #[serde(default)]
+    pub(crate) status_flags: u32,
+    #[serde(default)]
+    pub(crate) active_clients: Vec<ahp_types::state::SessionActiveClient>,
+    #[serde(default)]
+    pub(crate) input_needed: Vec<ahp_types::state::SessionInputRequest>,
     pub(crate) uri: Uri,
     pub(crate) provider: String,
     pub(crate) title: String,
@@ -44,11 +50,21 @@ pub(crate) struct PersistedChat {
     #[serde(default)]
     pub(crate) turns: Vec<PersistedTurn>,
     #[serde(default)]
+    pub(crate) materialized_attachments: std::collections::BTreeMap<String, Vec<Turn>>,
+    #[serde(default)]
     pub(crate) active: Option<ActiveRecord>,
     #[serde(default)]
     pub(crate) draft: Option<Message>,
     #[serde(default)]
     pub(crate) model_cursor: Option<ModelCursor>,
+    #[serde(default)]
+    pub(crate) pending: ahp_server_core::PendingMessages,
+    #[serde(default)]
+    pub(crate) status_reset: bool,
+    #[serde(default)]
+    pub(crate) status_flags: u32,
+    #[serde(default)]
+    pub(crate) working_directories: Option<Vec<Uri>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -89,30 +105,31 @@ pub(crate) fn chat_summary(chat: &PersistedChat) -> ChatSummary {
         resource: chat.uri.clone(),
         title: chat.title.clone(),
         status: chat_status(chat),
-        activity: chat
-            .active
-            .as_ref()
-            .map(|_| "Waiting for model response".to_owned()),
+        activity: None,
         modified_at: chat.modified_at.clone(),
+        changes: None,
         origin: None,
+        movable: None,
         interactivity: None,
-        working_directories: None,
+        working_directories: chat.working_directories.clone(),
     }
 }
 
 pub(crate) fn chat_status(chat: &PersistedChat) -> u32 {
     if chat.active.as_ref().is_some_and(active_turn_needs_input) {
-        return SessionStatus::InputNeeded.bits();
+        return SessionStatus::InputNeeded.bits() | chat.status_flags;
     }
     if chat.active.is_some() {
-        return SessionStatus::InProgress.bits();
+        return SessionStatus::InProgress.bits() | chat.status_flags;
     }
-    match chat.turns.last().map(|turn| turn.state) {
-        Some(PersistedTurnState::Error) => SessionStatus::Error.bits(),
+    let activity = match chat.turns.last().map(|turn| turn.state) {
+        Some(PersistedTurnState::Error) if !chat.status_reset => SessionStatus::Error.bits(),
+        Some(PersistedTurnState::Error) => SessionStatus::Idle.bits(),
         Some(PersistedTurnState::Complete | PersistedTurnState::Cancelled) | None => {
             SessionStatus::Idle.bits()
         }
-    }
+    };
+    activity | chat.status_flags
 }
 
 pub(crate) fn aggregate_chat_summary(
@@ -143,7 +160,15 @@ pub(crate) fn aggregate_chat_summary(
         })
         .unwrap_or(default);
     (
-        driving_chat.status,
+        (driving_chat.status & 0x1f)
+            | if chats
+                .iter()
+                .any(|chat| status_contains(chat.status, SessionStatus::Error))
+            {
+                SessionStatus::Error.bits()
+            } else {
+                0
+            },
         driving_chat.activity.clone(),
         latest.modified_at.clone(),
     )
@@ -220,7 +245,7 @@ pub(crate) fn response_parts(
     }
 }
 
-pub(crate) fn terminalize_incomplete_tool_calls(parts: &mut [ResponsePart], message: &str) {
+pub(crate) fn terminalize_incomplete_tool_calls(parts: &mut [ResponsePart], _message: &str) {
     for part in parts {
         let ResponsePart::ToolCall(tool) = part else {
             continue;
@@ -237,18 +262,31 @@ pub(crate) fn terminalize_incomplete_tool_calls(parts: &mut [ResponsePart], mess
         let Some(object) = state.as_object_mut() else {
             continue;
         };
+        let streaming = matches!(&tool.tool_call, ToolCallState::Streaming(_));
+        object.retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "toolCallId"
+                    | "toolName"
+                    | "displayName"
+                    | "intention"
+                    | "contributor"
+                    | "_meta"
+                    | "invocationMessage"
+                    | "toolInput"
+            )
+        });
+        if streaming {
+            object.remove("toolInput");
+        }
+        object
+            .entry("invocationMessage")
+            .or_insert_with(|| serde_json::Value::String(String::new()));
         object.insert(
             "status".into(),
             serde_json::Value::String("cancelled".into()),
         );
         object.insert("reason".into(), serde_json::Value::String("skipped".into()));
-        object.insert(
-            "reasonMessage".into(),
-            serde_json::Value::String(message.to_owned()),
-        );
-        object
-            .entry(String::from("invocationMessage"))
-            .or_insert_with(|| serde_json::Value::String(message.to_owned()));
         if let Ok(terminal) = serde_json::from_value(state) {
             tool.tool_call = terminal;
         }

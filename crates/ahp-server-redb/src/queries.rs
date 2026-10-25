@@ -15,6 +15,17 @@ use ahp_types::state::{
 };
 
 impl RedbHostStore {
+    pub(crate) fn pending_messages_for(
+        &self,
+        chat_uri: &str,
+    ) -> Result<ahp_server_core::PendingMessages, StoreError> {
+        let database = self.database()?;
+        let read = database.get()?.begin_read().map_err(backend)?;
+        let chat = read_record::<PersistedChat>(&read, crate::tables::CHATS, chat_uri)?
+            .ok_or_else(|| StoreConflict::UnknownChannel(chat_uri.into()))?;
+        Ok(chat.pending)
+    }
+
     pub(crate) fn snapshot_for(&self, request: SnapshotRequest) -> Result<Snapshot, StoreError> {
         let database = self.database()?;
         let read = database.get()?.begin_read().map_err(backend)?;
@@ -119,6 +130,7 @@ fn session_snapshot(
 ) -> Result<Snapshot, StoreError> {
     let summary = session_summary(read, &session)?;
     let chats = chat_summaries(read, &session.chats)?;
+    let input_needed = session.input_needed.clone();
     let config = session
         .model_selection
         .as_ref()
@@ -146,13 +158,13 @@ fn session_snapshot(
             },
             creation_error: None,
             server_tools: Some(request.server_tools),
-            active_clients: Vec::new(),
+            active_clients: session.active_clients,
             chats,
             default_chat: session.default_chat,
             config: Some(config),
             customizations: None,
             changesets: None,
-            input_needed: None,
+            input_needed: (!input_needed.is_empty()).then_some(input_needed),
             meta: None,
         })),
     })
@@ -168,7 +180,7 @@ fn session_summary(
     Ok(SessionSummary {
         provider: session.provider.clone(),
         title: session.title.clone(),
-        status,
+        status: status | session.status_flags,
         activity,
         origin: None,
         project: None,
@@ -180,6 +192,8 @@ fn session_summary(
         modified_at,
         changes: None,
         meta: None,
+        chats: Some(ahp_server_core::catalog::compact_chats(&chats)),
+        default_chat: session.default_chat.clone(),
     })
 }
 
@@ -195,29 +209,30 @@ fn chat_summaries(
     })
 }
 
-fn chat_state(read: &redb::ReadTransaction, chat: &PersistedChat) -> Result<ChatState, StoreError> {
-    let working_directories =
-        read_record::<PersistedSession>(read, crate::tables::SESSIONS, &chat.session_uri)?
-            .and_then(|session| {
-                (!session.working_directories.is_empty()).then_some(session.working_directories)
-            });
+fn chat_state(
+    _read: &redb::ReadTransaction,
+    chat: &PersistedChat,
+) -> Result<ChatState, StoreError> {
+    let working_directories = chat.working_directories.clone();
     Ok(ChatState {
         resource: chat.uri.clone(),
         title: chat.title.clone(),
         status: chat_status(chat),
-        activity: chat
-            .active
-            .as_ref()
-            .map(|_| "Waiting for model response".into()),
+        activity: None,
         modified_at: chat.modified_at.clone(),
+        changes: None,
         origin: None,
+        movable: None,
         interactivity: None,
         working_directories,
+        changesets: None,
+        background_work: None,
+        canvases: None,
         turns: chat.turns.iter().map(turn).collect(),
         turns_next_cursor: None,
         active_turn: chat.active.as_ref().map(active_turn),
-        steering_message: None,
-        queued_messages: None,
+        steering_message: chat.pending.steering.clone(),
+        queued_messages: (!chat.pending.entries.is_empty()).then(|| chat.pending.entries.clone()),
         draft: chat.draft.clone(),
         meta: None,
     })

@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=../conformance.schema.json
+# Runs the suite against a fresh, isolated VS Code agent host (Insiders) using real models.
+# From tools/ahp-conformance:
+#   export AHP_VSCODE_TOKEN="$(openssl rand -hex 24)"
+#   node src/cli.ts examples/vscode-agent-host.yml
+# The launched host is a separate `--new-instance` with its own user/server data under the run's
+# scratch directory, so it never touches an editor's agent host; the runner stops it after the run.
+# Requires `code-insiders` on PATH and a GitHub login for `gh auth token` with Copilot access.
+target:
+  url: ws://127.0.0.1:18898/
+  query:
+    tkn: { env: AHP_VSCODE_TOKEN }
+host:
+  command: >-
+    umask 077 && printf %s "$AHP_VSCODE_TOKEN" > "${scratchDir}/vscode-token" &&
+    exec code-insiders agent host --new-instance --foreground --host 127.0.0.1 --port 18898
+    --connection-token-file "${scratchDir}/vscode-token"
+    --user-data-dir "${scratchDir}/vscode-user-data" --server-data-dir "${scratchDir}/vscode-server-data"
+  readyTimeoutMs: 180000 # The first launch may download the agent host server.
+auth:
+  tokens:
+    - resource: https://api.github.com
+      token: { command: "gh auth token" }
+    - resource: https://api.github.com/repos
+      token: { command: "gh auth token" }
+agent:
+  provider: copilotcli
+  model: gpt-6-luna
+  catalogTimeoutMs: 60000 # Models are listed only after authentication.
+model:
+  enabled: true
+  deterministic: false
+quirks:
+  lazySessionInit: true # Sessions stay "creating" until their first turn.
+run:
+  concurrency: 4
+  timeoutMs: 90000 # Real model turns.

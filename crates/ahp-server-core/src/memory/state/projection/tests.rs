@@ -121,7 +121,7 @@ fn active_confirmation_states_project_input_needed_chat_snapshots() -> Result<()
         return Err("expected chat snapshot".into());
     };
     assert!(SessionStatus::from_bits(chat.status).contains(SessionStatus::InputNeeded));
-    assert_eq!(chat.activity.as_deref(), Some("Waiting for input"));
+    assert_eq!(chat.activity, None);
     Ok(())
 }
 

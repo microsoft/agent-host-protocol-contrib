@@ -26,10 +26,14 @@ pub enum ProfileError {
 
 /// Host-owned behavior at the boundary to an agent environment.
 ///
-/// Core never accesses the filesystem or starts a process. Implementations own
-/// workspace selection and execute a preflighted operation while honoring both
-/// supplied cancellation tokens.
+/// Implementations own workspace selection and execute a preflighted operation
+/// while honoring both supplied cancellation tokens.
 pub trait AgentProfile: Send + Sync {
+    /// Workspace roots available to resource requests; absent profiles deny access.
+    fn resource_workspaces(&self) -> Option<&ConfiguredWorkspaces> {
+        None
+    }
+
     /// Selects one configured workspace for a new session.
     fn select_workspace(
         &self,
@@ -85,6 +89,10 @@ impl WorkspaceAgentProfile {
 }
 
 impl AgentProfile for WorkspaceAgentProfile {
+    fn resource_workspaces(&self) -> Option<&ConfiguredWorkspaces> {
+        Some(self.tools.workspaces())
+    }
+
     fn select_workspace(
         &self,
         requested: Option<Vec<Uri>>,

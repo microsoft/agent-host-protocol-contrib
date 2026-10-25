@@ -39,11 +39,19 @@ impl RedbHostStore {
                 created_at: timestamp.clone(),
                 modified_at: timestamp.clone(),
                 turns: Vec::new(),
+                materialized_attachments: Default::default(),
                 active: None,
                 draft: None,
                 model_cursor: None,
+                pending: Default::default(),
+                status_reset: false,
+                status_flags: 0,
+                working_directories: Some(vec![request.workspace.clone()]),
             };
             let session = PersistedSession {
+                status_flags: 0,
+                active_clients: Vec::new(),
+                input_needed: Vec::new(),
                 uri: request.session.clone(),
                 provider: request.provider,
                 title: "New OpenAI-compatible session".into(),
@@ -133,9 +141,15 @@ impl RedbHostStore {
                 created_at: timestamp.clone(),
                 modified_at: timestamp,
                 turns: Vec::new(),
+                materialized_attachments: Default::default(),
                 active: None,
                 draft: None,
                 model_cursor: None,
+                pending: Default::default(),
+                status_reset: false,
+                status_flags: 0,
+                working_directories: (!session.working_directories.is_empty())
+                    .then(|| session.working_directories.clone()),
             };
             session.chats.push(chat.uri.clone());
             write_chat(write, &chat)?;
@@ -172,18 +186,32 @@ impl RedbHostStore {
             drop(sessions);
             write_session_ids(write, &session_ids)?;
             let count = i64::try_from(session_ids.len()).unwrap_or(i64::MAX);
+            let mut drafts = session
+                .chats
+                .iter()
+                .map(|chat| {
+                    Draft::action(
+                        session_uri.clone(),
+                        StateAction::SessionChatRemoved(
+                            ahp_types::actions::SessionChatRemovedAction { chat: chat.clone() },
+                        ),
+                        None,
+                    )
+                })
+                .collect::<Vec<_>>();
+            drafts.push(Draft::action(
+                ROOT_RESOURCE_URI,
+                StateAction::RootActiveSessionsChanged(RootActiveSessionsChangedAction {
+                    active_sessions: count,
+                }),
+                None,
+            ));
             Ok(TransitionWork::new(
                 DisposedSession {
                     session: session_uri,
                     chats: session.chats,
                 },
-                vec![Draft::action(
-                    ROOT_RESOURCE_URI,
-                    StateAction::RootActiveSessionsChanged(RootActiveSessionsChangedAction {
-                        active_sessions: count,
-                    }),
-                    None,
-                )],
+                drafts,
             ))
         })
     }

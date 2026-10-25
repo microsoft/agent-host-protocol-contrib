@@ -26,6 +26,32 @@ impl NoSavedSelectionStore {
 }
 
 impl HostStore for NoSavedSelectionStore {
+    fn pending_messages(&self, chat: &str) -> Result<ahp_server_core::PendingMessages, StoreError> {
+        self.inner.pending_messages(chat)
+    }
+
+    fn change_chat(
+        &self,
+        request: ahp_server_core::ChangeChat,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.inner.change_chat(request)
+    }
+
+    fn change_session(
+        &self,
+        request: ahp_server_core::ChangeSession,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.inner.change_session(request)
+    }
+
+    fn publish_resource_change(
+        &self,
+        channel: Uri,
+        action: ahp_types::actions::ResourceWatchChangedAction,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.inner.publish_resource_change(channel, action)
+    }
+
     fn server_sequence(&self) -> Result<i64, StoreError> {
         self.inner.server_sequence()
     }
@@ -187,7 +213,7 @@ async fn explicit_message_model_bypasses_missing_legacy_selection(
         1,
         "initialize",
         json!({
-            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.9.0"],
+            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["1.0.0"],
             "initialSubscriptions": ["ahp-root://"]
         }),
     )

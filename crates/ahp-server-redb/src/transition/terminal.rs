@@ -9,7 +9,7 @@ use ahp_types::state::{ErrorResponsePart, ResponsePart};
 use crate::replay::{Draft, TransitionWork};
 use crate::sessions::write_chat;
 use crate::types::{
-    now_millis, now_rfc3339, terminalize_incomplete_tool_calls, trim_turn_history, PersistedTurn,
+    now_millis, terminalize_incomplete_tool_calls, trim_turn_history, PersistedTurn,
     PersistedTurnState,
 };
 use crate::RedbHostStore;
@@ -73,11 +73,15 @@ impl RedbHostStore {
                 }
                 .into());
             }
-            let duration = now_millis().saturating_sub(active.started_millis);
+            let duration = now_millis().saturating_sub(active.started_millis).max(0);
+            let modified_at = chrono::DateTime::parse_from_rfc3339(&active.started_at)
+                .map_err(|error| StoreError::Backend(error.to_string()))?
+                .checked_add_signed(chrono::TimeDelta::milliseconds(duration))
+                .ok_or_else(|| StoreError::Backend("turn timestamp overflow".into()))?
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
             let mut parts = active.response_parts;
-            if state != PersistedTurnState::Complete {
-                terminalize_incomplete_tool_calls(&mut parts, "Tool call was interrupted.");
-            }
+            terminalize_incomplete_tool_calls(&mut parts, "Tool call was interrupted.");
             let error_part = error.clone().map(|error| ErrorResponsePart {
                 error,
                 resumable: None,
@@ -99,7 +103,7 @@ impl RedbHostStore {
                 error: error.clone(),
             });
             trim_turn_history(&mut chat.turns);
-            chat.modified_at = now_rfc3339();
+            chat.modified_at = modified_at;
             write_chat(write, &chat)?;
             Ok(TransitionWork::new(
                 duration,

@@ -144,7 +144,7 @@ describe("chat projection", () => {
     ])
   })
 
-  it("projects AHP 0.9 turn errors in response order", () => {
+  it("projects AHP 1.0 turn errors in response order", () => {
     const started = chatReducer(baseChat, {
       type: ActionType.ChatTurnStarted,
       turnId: "turn-1",

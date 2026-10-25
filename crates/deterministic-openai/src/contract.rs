@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 pub(crate) mod code {
     pub(crate) const INVALID_REQUEST: &str = "AHP_MOCK_INVALID_REQUEST";
     pub(crate) const UNKNOWN_TOOL: &str = "AHP_MOCK_UNKNOWN_TOOL";
+    pub(crate) const NO_SUITABLE_TOOL: &str = "AHP_TEST_NO_SUITABLE_TOOL";
     pub(crate) const INVALID_DIRECTIVE: &str = "AHP_TEST_INVALID_DIRECTIVE";
     pub(crate) const UNSUPPORTED_VERSION: &str = "AHP_TEST_UNSUPPORTED_VERSION";
     pub(crate) const UPSTREAM: &str = "AHP_TEST_UPSTREAM";

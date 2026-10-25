@@ -7,12 +7,47 @@ use ahp_types::state::{ResponsePart, ToolCallState};
 use crate::approvals::add_approval;
 use crate::replay::{Draft, TransitionWork};
 use crate::sessions::write_chat;
-use crate::types::{now_rfc3339, part_tool_call_id, tool_call_id, valid_tool_transition};
+use crate::types::{part_tool_call_id, tool_call_id, valid_tool_transition};
 use crate::RedbHostStore;
 
 use super::{active_mut, owned_chat};
 
 impl RedbHostStore {
+    pub(crate) fn change_client_tool_transition(
+        &self,
+        request: ahp_server_core::ChangeClientTool,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        self.commit_transition(move |write| {
+            let mut chat = owned_chat(write, &request.chat)?;
+            let active = active_mut(&mut chat, &request.turn_id)?;
+            let state = active
+                .response_parts
+                .iter_mut()
+                .find_map(|part| match part {
+                    ResponsePart::ToolCall(tool)
+                        if tool_call_id(&tool.tool_call) == request.tool_call_id =>
+                    {
+                        Some(&mut tool.tool_call)
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| StoreConflict::ToolNotFound {
+                    chat: request.chat.clone(),
+                    tool_call_id: request.tool_call_id.clone(),
+                })?;
+            request.apply(state)?;
+            write_chat(write, &chat)?;
+            Ok(TransitionWork::new(
+                (),
+                vec![Draft::action(
+                    request.chat.clone(),
+                    request.action(),
+                    request.origin.clone(),
+                )],
+            ))
+        })
+    }
+
     pub(crate) fn start_tool_transition(
         &self,
         chat_uri: &str,
@@ -41,7 +76,6 @@ impl RedbHostStore {
                 .into());
             }
             active.response_parts.push(part);
-            chat.modified_at = now_rfc3339();
             write_chat(write, &chat)?;
             Ok(TransitionWork::new(
                 (),
@@ -96,7 +130,6 @@ impl RedbHostStore {
                 .partial_input
                 .get_or_insert_with(String::new)
                 .push_str(&delta);
-            chat.modified_at = now_rfc3339();
             write_chat(write, &chat)?;
             Ok(TransitionWork::new(
                 (),
@@ -140,7 +173,6 @@ impl RedbHostStore {
                 .into());
             }
             *state = transition.next_state;
-            chat.modified_at = now_rfc3339();
             write_chat(write, &chat)?;
             if let Some(approval) = transition.allow_command.as_ref() {
                 add_approval(write, approval)?;

@@ -25,11 +25,12 @@ pub(super) fn create_session(
             return Err(StoreConflict::ChatExists(request.default_chat).into());
         }
         let timestamp = now();
-        let chat = Chat::new(
+        let mut chat = Chat::new(
             request.default_chat.clone(),
             request.session.clone(),
             timestamp.clone(),
         );
+        chat.working_directories = Some(vec![request.workspace.clone()]);
         let summary = data.chat_summary(&chat);
         data.chats.insert(chat.uri.clone(), chat);
         data.sessions.insert(
@@ -118,7 +119,8 @@ pub(super) fn create_chat(
         if !data.session(&request.session)?.ready {
             return Err(StoreConflict::SessionNotReady(request.session).into());
         }
-        let chat = Chat::new(request.chat.clone(), request.session.clone(), now());
+        let mut chat = Chat::new(request.chat.clone(), request.session.clone(), now());
+        chat.working_directories = Some(vec![data.session(&request.session)?.workspace.clone()]);
         let summary = data.chat_summary(&chat);
         data.chats.insert(chat.uri.clone(), chat);
         data.session_mut(&request.session)?.chats.push(request.chat);
@@ -146,19 +148,30 @@ pub(super) fn dispose_session(
         for chat in &session_state.chats {
             data.chats.remove(chat);
         }
+        let mut drafts = session_state
+            .chats
+            .iter()
+            .map(|chat| {
+                Draft::action(
+                    session.clone(),
+                    StateAction::SessionChatRemoved(ahp_types::actions::SessionChatRemovedAction {
+                        chat: chat.clone(),
+                    }),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        drafts.push(Draft::action(
+            ROOT_RESOURCE_URI.into(),
+            StateAction::RootActiveSessionsChanged(RootActiveSessionsChangedAction {
+                active_sessions: i64::try_from(data.sessions.len()).unwrap_or(i64::MAX),
+            }),
+            None,
+        ));
         let value = DisposedSession {
             session: session.clone(),
             chats: session_state.chats,
         };
-        Ok((
-            value,
-            vec![Draft::action(
-                ROOT_RESOURCE_URI.into(),
-                StateAction::RootActiveSessionsChanged(RootActiveSessionsChangedAction {
-                    active_sessions: i64::try_from(data.sessions.len()).unwrap_or(i64::MAX),
-                }),
-                None,
-            )],
-        ))
+        Ok((value, drafts))
     })
 }

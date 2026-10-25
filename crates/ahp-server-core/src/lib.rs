@@ -2,16 +2,26 @@
 
 #![forbid(unsafe_code)]
 
+mod attachments;
+pub mod catalog;
+mod chat_state;
+mod client_tools;
 mod config;
 mod host;
 mod memory;
 mod model_catalog;
 mod presentation;
 mod profile;
+mod resources;
 mod rpc;
 mod store;
 mod turns;
 
+pub use attachments::materialize_attachments;
+pub use client_tools::{client_tools, ChangeClientTool, ClientTool, ClientToolMutation};
+pub use store::{ChangeSession, SessionMutation};
+
+pub use chat_state::{ChangeChat, ChatMutation, PendingMessages};
 pub use config::{CoreConfig, CoreConfigError};
 pub use host::{CoreHost, CoreHostError, CorePeer, Shutdown};
 pub use memory::MemoryHostStore;

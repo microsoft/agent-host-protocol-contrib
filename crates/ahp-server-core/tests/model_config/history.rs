@@ -81,7 +81,7 @@ async fn supplies_completed_chat_turns_to_the_next_model_request(
         "initialize",
         json!({
             "channel": "ahp-root://", "clientId": "history-client",
-            "protocolVersions": ["0.9.0"], "initialSubscriptions": ["ahp-root://"]
+            "protocolVersions": ["1.0.0"], "initialSubscriptions": ["ahp-root://"]
         }),
     )
     .await?;

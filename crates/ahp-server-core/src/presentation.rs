@@ -20,6 +20,7 @@ pub(crate) struct ToolPresentation {
     intention: String,
     invocation_message: String,
     input: String,
+    contributor: Option<ahp_types::state::ToolCallContributor>,
 }
 
 impl ToolPresentation {
@@ -45,7 +46,40 @@ impl ToolPresentation {
             intention: intention.into(),
             invocation_message: intention.into(),
             input,
+            contributor: None,
         })
+    }
+
+    pub(crate) fn for_turn(
+        id: String,
+        name: String,
+        input: String,
+        started: &crate::StartedTurn,
+    ) -> Result<Self, String> {
+        let mut presentation = Self::new(id, name, input)?;
+        if let Some(tool) = started
+            .client_tools
+            .iter()
+            .find(|tool| tool.definition.name == presentation.name)
+        {
+            presentation.display_name = tool
+                .definition
+                .title
+                .clone()
+                .unwrap_or_else(|| presentation.name.clone());
+            presentation.intention = tool
+                .definition
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Run {}", presentation.name));
+            presentation.invocation_message = presentation.intention.clone();
+            presentation.contributor = Some(ahp_types::state::ToolCallContributor::Client(
+                ahp_types::state::ToolCallClientContributor {
+                    client_id: tool.client_id.clone(),
+                },
+            ));
+        }
+        Ok(presentation)
     }
 
     pub(crate) fn response_part(&self) -> ahp_types::state::ResponsePart {
@@ -60,10 +94,10 @@ impl ToolPresentation {
             tool_name: self.name.clone(),
             display_name: self.display_name.clone(),
             intention: Some(self.intention.clone()),
-            contributor: None,
+            contributor: self.contributor.clone(),
             meta: None,
             partial_input: None,
-            invocation_message: Some(self.invocation_message.clone().into()),
+            invocation_message: None,
         })
     }
 
@@ -77,7 +111,7 @@ impl ToolPresentation {
             tool_name: self.name.clone(),
             display_name: self.display_name.clone(),
             intention: Some(self.intention.clone()),
-            contributor: None,
+            contributor: self.contributor.clone(),
             meta: None,
             invocation_message: self.invocation_message.clone().into(),
             tool_input: Some(ToolInput::Inline(self.input.clone())),
@@ -93,7 +127,7 @@ impl ToolPresentation {
             tool_name: self.name.clone(),
             display_name: self.display_name.clone(),
             intention: Some(self.intention.clone()),
-            contributor: None,
+            contributor: self.contributor.clone(),
             meta: None,
             invocation_message: self.invocation_message.clone().into(),
             tool_input: Some(ToolInput::Inline(self.input.clone())),
@@ -116,7 +150,7 @@ impl ToolPresentation {
             tool_name: self.name.clone(),
             display_name: self.display_name.clone(),
             intention: Some(self.intention.clone()),
-            contributor: None,
+            contributor: self.contributor.clone(),
             meta: None,
             invocation_message: self.invocation_message.clone().into(),
             tool_input: Some(ToolInput::Inline(self.input.clone())),
@@ -136,7 +170,7 @@ impl ToolPresentation {
             tool_name: self.name.clone(),
             display_name: self.display_name.clone(),
             intention: Some(self.intention.clone()),
-            contributor: None,
+            contributor: self.contributor.clone(),
             meta: None,
             invocation_message: self.invocation_message.clone().into(),
             tool_input: Some(ToolInput::Inline(self.input.clone())),
@@ -155,7 +189,7 @@ impl ToolPresentation {
             tool_name: self.name.clone(),
             display_name: self.display_name.clone(),
             intention: Some(self.intention.clone()),
-            contributor: None,
+            contributor: self.contributor.clone(),
         })
     }
 
@@ -179,7 +213,7 @@ impl ToolPresentation {
             turn_id: turn_id.into(),
             tool_call_id: self.id.clone(),
             meta: None,
-            contributor: None,
+            contributor: self.contributor.clone(),
             intention: Some(self.intention.clone()),
             invocation_message: self.invocation_message.clone().into(),
             tool_input: Some(ToolInput::Inline(self.input.clone())),
