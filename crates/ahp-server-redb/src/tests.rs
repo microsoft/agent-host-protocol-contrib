@@ -1,3 +1,5 @@
+mod catalog;
+
 use std::path::PathBuf;
 
 use ahp_server_core::{
@@ -355,7 +357,13 @@ fn catalogue_transitions_are_journaled_and_snapshots_are_typed(
         disposed.value.chats,
         vec![chat, "ahp-chat:/catalogue-extra".into()]
     );
-    assert_eq!(disposed.envelopes.len(), 1);
+    assert_eq!(disposed.envelopes.len(), 3);
+    for (event, chat) in disposed.envelopes.iter().zip(&disposed.value.chats) {
+        assert_eq!(event.channel, session);
+        assert!(
+            matches!(&event.action, StateAction::SessionChatRemoved(action) if action.chat == *chat)
+        );
+    }
     assert!(matches!(
         store.snapshot(SnapshotRequest {
             channel: session,

@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     cancelled,
-    history::model_messages,
+    history::model_messages_with_attachments,
     split_scalars,
     tool::{append_response_part, append_text, append_tool_delta, execute_tool, start_tool},
     TurnFailure, TurnOutcome, MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS_PER_TURN,
@@ -23,7 +23,15 @@ use crate::host::{CoreHost, TurnKey};
 use crate::presentation::ToolPresentation;
 use crate::store::FinishTurn;
 
-pub(crate) async fn run_turn(
+pub(crate) fn run_turn(
+    host: CoreHost,
+    started: crate::StartedTurn,
+    cancellation: CancellationToken,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(run_turn_task(host, started, cancellation))
+}
+
+async fn run_turn_task(
     host: CoreHost,
     started: crate::StartedTurn,
     cancellation: CancellationToken,
@@ -56,6 +64,7 @@ pub(crate) async fn run_turn(
             if !cancelled(&host, &cancellation) {
                 if let Ok(transition) = host.inner.store.finish_turn(terminal) {
                     host.fanout(&transition).await;
+                    let _ = super::pending::start_next_queued_locked(&host, &started.chat).await;
                 }
             }
         }
@@ -84,16 +93,24 @@ async fn run_turn_inner(
         }
     };
     let chain_scope = host.inner.model.response_chain_scope().map(str::to_owned);
-    let messages = model_messages(
-        &started.history,
-        started.workspace.as_str(),
-        &started.message.text,
-    );
-    let current_message_index = messages.len().saturating_sub(1);
+    let (messages, current_message_index) = model_messages_with_attachments(started);
+    let mut tools = host.inner.profile.model_tools();
+    for tool in &started.client_tools {
+        tools.retain(|existing| existing.name != tool.definition.name);
+        tools.push(openai_agent_model::ModelToolDefinition {
+            name: tool.definition.name.clone(),
+            description: tool.definition.description.clone().unwrap_or_default(),
+            input_schema: tool
+                .definition
+                .input_schema
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
+        });
+    }
     let mut request = model_request_with_selection(
         ModelRequest {
             messages,
-            tools: host.inner.profile.model_tools(),
+            tools,
             model_selection: None,
             response_continuation: None,
             store_response: chain_scope.is_some(),
@@ -115,6 +132,11 @@ async fn run_turn_inner(
     let mut next_text_segment = 1_usize;
     let mut use_initial_text_part = true;
     loop {
+        if let Err(error) =
+            super::pending::deliver_steering(host, started, cancellation, &mut request).await
+        {
+            return TurnOutcome::Failed(TurnFailure::tool(error));
+        }
         let reply = match next_reply(
             host,
             started,
@@ -275,9 +297,10 @@ async fn next_reply(
                     )));
                 }
                 text_part_id = None;
-                let presentation = ToolPresentation::new(id.clone(), name.clone(), String::new())
-                    .map_err(TurnFailure::tool)
-                    .map_err(TurnOutcome::Failed)?;
+                let presentation =
+                    ToolPresentation::for_turn(id.clone(), name.clone(), String::new(), started)
+                        .map_err(TurnFailure::tool)
+                        .map_err(TurnOutcome::Failed)?;
                 start_tool(host, started, &presentation, cancellation).await?;
                 calls.insert(
                     index,
@@ -301,10 +324,14 @@ async fn next_reply(
                     )));
                 }
                 call.arguments.push_str(&delta);
-                let presentation =
-                    ToolPresentation::new(call.id.clone(), call.name.clone(), String::new())
-                        .map_err(TurnFailure::tool)
-                        .map_err(TurnOutcome::Failed)?;
+                let presentation = ToolPresentation::for_turn(
+                    call.id.clone(),
+                    call.name.clone(),
+                    String::new(),
+                    started,
+                )
+                .map_err(TurnFailure::tool)
+                .map_err(TurnOutcome::Failed)?;
                 append_tool_delta(host, started, &presentation, delta, cancellation).await?;
             }
             ModelStreamEvent::Completed => {

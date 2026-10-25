@@ -6,7 +6,7 @@ use ahp_types::actions::{
 };
 use ahp_types::state::{MarkdownResponsePart, MessageKind, ResponsePart, ToolCallState};
 
-use super::state::{now, response_part_id};
+use super::state::response_part_id;
 use super::{Draft, MemoryHostStore};
 use crate::store::{
     ChangeDraft, CommittedTransition, DraftTurnPrecondition, StartedTurn, StoreConflict,
@@ -18,7 +18,29 @@ pub(super) fn start_turn(
     request: TurnStart,
 ) -> Result<CommittedTransition<StartedTurn>, StoreError> {
     store.transact(move |data| {
+        let pinned = request.action.queued_message_id.as_ref().and_then(|id| {
+            let pending = &data.chat(&request.chat).ok()?.pending;
+            pending.entries.iter().find(|entry| {
+                entry.id == *id && entry.message.attachments == request.action.message.attachments
+            })?;
+            pending.queued_attachments.get(id).cloned()
+        });
+        let attachment_context = match pinned {
+            Some(context) => context,
+            None => crate::materialize_attachments(&request.action.message, |uri| {
+                Ok(data
+                    .chat(uri)?
+                    .turns
+                    .iter()
+                    .map(super::state::StoredTurn::snapshot)
+                    .collect())
+            })?,
+        };
         let existing_chat = data.chat(&request.chat)?;
+        let mut materialized_attachments = existing_chat.materialized_attachments.clone();
+        materialized_attachments
+            .retain(|id, _| existing_chat.turns.iter().any(|turn| turn.id == *id));
+        materialized_attachments.insert(request.action.turn_id.clone(), attachment_context);
         let draft_selection = existing_chat
             .draft
             .as_ref()
@@ -31,6 +53,14 @@ pub(super) fn start_turn(
         let model_cursor = existing_chat.model_cursor.clone();
         let session = data.session_for_chat(&request.chat)?;
         let workspace = session.workspace.clone();
+        let session_uri = session.uri.clone();
+        let client_tools = crate::client_tools(
+            &session.active_clients,
+            request
+                .origin
+                .as_ref()
+                .map(|origin| origin.client_id.as_str()),
+        );
         let model_selection = request
             .action
             .message
@@ -51,43 +81,66 @@ pub(super) fn start_turn(
         let mut action = request.action;
         action.message.model = Some(model_selection.clone());
         chat.active = Some(super::state::Active::new(&action, part.clone()));
+        chat.materialized_attachments = materialized_attachments.clone();
         chat.draft = None;
-        chat.modified_at = now();
+        chat.modified_at = action.started_at.clone();
+        chat.status_reset = false;
+        chat.status_flags &= !ahp_types::state::SessionStatus::IsRead.bits();
+        let consumed = action
+            .queued_message_id
+            .as_deref()
+            .and_then(|id| chat.pending.consume(id));
         let value = StartedTurn {
             chat: request.chat.clone(),
             turn_id: action.turn_id.clone(),
             history,
             model_cursor,
+            materialized_attachments,
+            session: session_uri,
+            client_tools,
             message: action.message.clone(),
             workspace,
             model_selection,
         };
         let summary = data.chat_summary(data.chat(&request.chat)?);
-        Ok((
-            value.clone(),
-            vec![
+        let mut drafts = vec![
+            Draft::action(
+                request.chat.clone(),
+                StateAction::ChatTurnStarted(action),
+                request.origin.clone(),
+            ),
+            Draft::action(
+                request.chat.clone(),
+                StateAction::ChatDraftChanged(ChatDraftChangedAction { draft: None }),
+                request.origin,
+            ),
+            summary_draft(data, &request.chat, summary),
+            Draft::action(
+                request.chat,
+                StateAction::ChatResponsePart(ChatResponsePartAction {
+                    turn_id: value.turn_id.clone(),
+                    part,
+                    meta: None,
+                }),
+                None,
+            ),
+        ];
+        if let Some(entry) = consumed {
+            drafts.insert(
+                0,
                 Draft::action(
-                    request.chat.clone(),
-                    StateAction::ChatTurnStarted(action),
-                    request.origin.clone(),
-                ),
-                Draft::action(
-                    request.chat.clone(),
-                    StateAction::ChatDraftChanged(ChatDraftChangedAction { draft: None }),
-                    request.origin,
-                ),
-                summary_draft(data, &request.chat, summary),
-                Draft::action(
-                    request.chat,
-                    StateAction::ChatResponsePart(ChatResponsePartAction {
-                        turn_id: value.turn_id,
-                        part,
-                        meta: None,
-                    }),
+                    value.chat.clone(),
+                    StateAction::ChatPendingMessageRemoved(
+                        ahp_types::actions::ChatPendingMessageRemovedAction {
+                            kind: ahp_types::state::PendingMessageKind::Queued,
+                            id: entry.id,
+                        },
+                    ),
                     None,
                 ),
-            ],
-        ))
+            );
+        }
+        Ok((value, drafts))
     })
 }
 
@@ -120,7 +173,6 @@ pub(super) fn change_draft(
             }
         }
         chat.draft = request.draft.clone();
-        chat.modified_at = now();
         Ok((
             (),
             vec![Draft::action(
@@ -145,7 +197,6 @@ pub(super) fn append_response_part(
         data.active_mut(&chat, &turn_id)?
             .response_parts
             .push(part.clone());
-        data.chat_mut(&chat)?.modified_at = now();
         Ok((
             (),
             vec![Draft::action(
@@ -184,7 +235,6 @@ pub(super) fn append_text(
             ));
         };
         markdown.content.push_str(&chunk);
-        data.chat_mut(&chat)?.modified_at = now();
         Ok((
             (),
             vec![Draft::action(
@@ -227,7 +277,6 @@ pub(super) fn start_tool(
             .into());
         }
         active.response_parts.push(part);
-        data.chat_mut(&chat)?.modified_at = now();
         Ok(((), vec![Draft::action(chat, action, None)]))
     })
 }
@@ -255,7 +304,6 @@ pub(super) fn append_tool_delta(
             .partial_input
             .get_or_insert_with(String::new)
             .push_str(&delta);
-        data.chat_mut(&chat)?.modified_at = now();
         Ok(((), vec![Draft::action(chat, action, None)]))
     })
 }
@@ -278,7 +326,6 @@ pub(super) fn transition_tool(
             .into());
         }
         *current = transition.next_state;
-        data.chat_mut(&transition.chat)?.modified_at = now();
         if let Some(command) = transition.allow_command {
             data.approvals.insert(command);
         }
@@ -311,7 +358,9 @@ pub(super) fn summary_draft(
                 status: Some(summary.status),
                 activity: summary.activity,
                 modified_at: Some(summary.modified_at),
+                changes: None,
                 origin: None,
+                movable: None,
                 interactivity: None,
                 working_directories: None,
             },

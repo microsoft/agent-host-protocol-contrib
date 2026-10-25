@@ -121,7 +121,11 @@ pub(crate) fn read_record<T>(
 where
     T: DeserializeOwned,
 {
-    let table = read.open_table(table_definition).map_err(backend)?;
+    let table = match read.open_table(table_definition) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+        Err(error) => return Err(backend(error)),
+    };
     let value = table.get(key).map_err(backend)?;
     let result = value
         .map(|value| serde_json::from_str(value.value()).map_err(json_error))

@@ -4,9 +4,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 
-use ahp_types::state::{ToolResultContent, ToolResultFileEditContent};
+use ahp_types::state::{ContentRef, FileEditSide, ToolResultContent, ToolResultFileEditContent};
 use serde::Deserialize;
-use serde_json::json;
 
 use crate::{resolve_existing_file, ToolExecution};
 
@@ -113,6 +112,15 @@ pub(crate) fn execute(workspace: &Path, prepared: PreparedReplaceString) -> Tool
         prepared.args.new_string,
         &contents[first + prepared.args.old_string.len()..]
     );
+    let uri = match url::Url::from_file_path(&target) {
+        Ok(uri) => uri.to_string(),
+        Err(()) => {
+            return ToolExecution::failed(format!(
+                "could not convert {} to a file URI",
+                relative.display()
+            ))
+        }
+    };
     if let Err(error) = atomic_write(&target, &replacement, &metadata.permissions()) {
         return ToolExecution::failed(format!(
             "could not replace text in {}: {error}",
@@ -127,11 +135,16 @@ pub(crate) fn execute(workspace: &Path, prepared: PreparedReplaceString) -> Tool
         .content
         .push(ToolResultContent::FileEdit(ToolResultFileEditContent {
             before: None,
-            after: None,
-            diff: Some(json!({
-                "path": relative.to_string_lossy(),
-                "replacements": 1,
-            })),
+            after: Some(FileEditSide {
+                uri: uri.clone(),
+                content: ContentRef {
+                    uri,
+                    size_hint: i64::try_from(replacement.len()).ok(),
+                    content_type: Some("text/plain".into()),
+                    nonce: None,
+                },
+            }),
+            diff: None,
         }));
     result
 }

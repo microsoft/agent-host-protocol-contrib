@@ -141,11 +141,13 @@ and cancellation/timeout terminates its process tree.
 
 ## Deterministic checks
 
-The deterministic fixture owns the immutable `[AHP-TEST v1]` text/error
-contract and `[AHP-TEST v2]` sequential tool-call contract. Exact text and
-chunk expectations belong to that fixture only. The conformance runner uses
-raw WebSocket JSON-RPC and keeps real-model checks semantic unless
-`--model-checks` is selected. See the
+The deterministic fixture owns versioned directive contracts, including
+`[AHP-TEST v1]` text/errors, `[AHP-TEST v2]` sequential tool calls, and
+`[AHP-TEST v4]` recall/read-file/write-file behavior. Exact text and chunk
+expectations belong to that fixture only. The YAML-configured TypeScript
+conformance runner uses granular raw WebSocket JSON-RPC probes and skips tests
+for capabilities the host does not advertise. Model-backed probes combine
+natural-language prompts with embedded `[AHP-TEST vN]` directives so they work
+with real models and the fixture; real-model assertions remain semantic. See the
 [fixture](../tools/deterministic-openai/README.md) and
-[conformance runner](../tools/ahp-conformance/README.md) for exact scopes and
-contracts.
+[conformance runner](../tools/ahp-conformance/README.md) for contracts and usage.

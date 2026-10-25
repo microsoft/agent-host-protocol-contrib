@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>AHP conformance report</title>
+  <!--REPORT_STYLE-->
+</head>
+<body>
+  <header class="page-header">
+    <div class="heading-line">
+      <div><p class="eyebrow">Agent Host Protocol</p><h1>Conformance report</h1></div>
+      <div class="run-state"><span id="connection" class="connection" role="status">Connecting</span><span id="elapsed" class="elapsed">0.0s</span></div>
+    </div>
+    <dl id="profile" class="profile"><div><dt>Host</dt><dd>Waiting for host profile…</dd></div></dl>
+    <div id="capabilities" class="capabilities" aria-label="Advertised capabilities"></div>
+    <div class="progress-line"><progress id="progress" value="0" max="1" aria-label="Tests completed"></progress><span id="progress-label">0 / 0 complete</span></div>
+    <div id="counts" class="counts" aria-live="polite" aria-atomic="true"></div>
+    <div id="errors" class="errors" role="alert" hidden></div>
+  </header>
+  <main>
+    <section class="controls" aria-label="Report controls">
+      <fieldset id="status-filters"><legend>Show status</legend></fieldset>
+      <label class="search-label">Search <input id="search" type="search" placeholder="Test id or title" autocomplete="off"></label>
+      <button id="expand-failures" type="button">Expand failures</button>
+      <label class="auto-scroll"><input id="auto-scroll" type="checkbox"> Auto-scroll to running</label>
+    </section>
+    <p id="result-summary" class="result-summary">Waiting for the test plan…</p>
+    <div class="table-wrap">
+      <table id="results">
+        <caption class="sr-only">Test results grouped by area and feature. Activate a test title to show its details.</caption>
+        <thead><tr><th scope="col" class="status-column">Result</th><th scope="col">Test</th><th scope="col" class="duration-column">Duration</th><th scope="col" class="spec-column"><span aria-hidden="true">↗</span><span class="sr-only">Spec</span></th><th scope="col" class="requirements-column">Requirements</th></tr></thead>
+      </table>
+    </div>
+    <p id="empty" class="empty" hidden>No tests match the selected filters.</p>
+  </main>
+  <footer>AHP conformance · Select a test to inspect assertions, logs, and its wire transcript.</footer>
+  <noscript>This report needs JavaScript to display recorded events.</noscript>
+  <!--REPORT_DATA-->
+  <!--REPORT_SCRIPT-->
+</body>
+</html>

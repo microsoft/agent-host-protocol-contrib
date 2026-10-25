@@ -74,7 +74,7 @@ describe("ConnectionManager", () => {
     const connecting = manager.connect("ws://example.test/ahp")
     const initialize = await readMessage(firstServer)
     expect(initialize.method).toBe("initialize")
-    reply(firstServer, initialize, { protocolVersion: "0.9.0", serverSeq: 0, snapshots: [] })
+    reply(firstServer, initialize, { protocolVersion: "1.0.0", serverSeq: 0, snapshots: [] })
     await expect(connecting).resolves.toBe(true)
 
     await manager.reconcileActiveSubscriptions(sessionA)

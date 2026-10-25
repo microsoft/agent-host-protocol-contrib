@@ -190,7 +190,7 @@ async fn advertises_and_resolves_the_complete_catalog() -> Result<(), Box<dyn st
         1,
         "initialize",
         json!({
-            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.9.0"],
+            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["1.0.0"],
             "initialSubscriptions": ["ahp-root://"]
         }),
     )
@@ -279,7 +279,7 @@ async fn requires_a_selection_when_the_host_has_no_default_model(
         1,
         "initialize",
         json!({
-            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.9.0"],
+            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["1.0.0"],
             "initialSubscriptions": ["ahp-root://"]
         }),
     )
@@ -410,3 +410,6 @@ mod model_config_stability;
 mod model_config_stale;
 #[path = "model_config/turns.rs"]
 mod model_config_turns;
+
+#[path = "model_config/chat_state.rs"]
+mod model_config_chat_state;

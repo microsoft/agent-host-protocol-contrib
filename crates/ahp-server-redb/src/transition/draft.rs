@@ -8,7 +8,6 @@ use ahp_types::state::MessageKind;
 
 use crate::replay::{Draft, TransitionWork};
 use crate::sessions::write_chat;
-use crate::types::now_rfc3339;
 use crate::RedbHostStore;
 
 use super::owned_chat;
@@ -43,7 +42,6 @@ impl RedbHostStore {
                 }
             }
             chat.draft = request.draft.clone();
-            chat.modified_at = now_rfc3339();
             write_chat(write, &chat)?;
             Ok(TransitionWork::new(
                 (),

@@ -1,4 +1,4 @@
-//! Endpoint handlers and deterministic v1/v2/v3 response selection.
+//! Endpoint handlers and deterministic v1/v2/v3/v4 response selection.
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
@@ -15,7 +15,7 @@ use super::response::{fixture_error, invalid_directive, invalid_request};
 use super::responses_stream;
 use super::v1::FixtureSpec;
 use super::v2::{self, V2Action, V2FixtureSpec};
-use super::v3;
+use super::{v3, v4};
 use super::{
     FixtureState, ObservedApi, ObservedRequest, CHAT_COMPLETION_ID, RESPONSES_ID,
     V2_CHAT_COMPLETION_ID, V2_RESPONSES_ID,
@@ -30,6 +30,9 @@ pub(super) async fn chat_completions(
         Err(response) => return *response,
     };
     observe_request(&state, ObservedApi::ChatCompletions, &request);
+    if v4::has_marker(&request.last_user_content) {
+        return v2_chat_response(request);
+    }
     if v3::has_marker(&request.last_user_content) {
         let response = match v3::previous_response(&request) {
             Ok(response) => response,
@@ -78,6 +81,9 @@ pub(super) async fn responses(
         Err(response) => return *response,
     };
     observe_request(&state, ObservedApi::Responses, &request);
+    if v4::has_marker(&request.last_user_content) {
+        return v2_responses_response(request);
+    }
     if v3::has_marker(&request.last_user_content) {
         let response = match v3::previous_response(&request) {
             Ok(response) => response,
@@ -176,6 +182,11 @@ fn v2_responses_response(request: FixtureRequest) -> Response {
 }
 
 fn v2_action(request: &FixtureRequest) -> Result<(V2Action, u64), Box<Response>> {
+    if v4::has_marker(&request.last_user_content) {
+        return v4::next_action(request)
+            .map(|action| (action, 0))
+            .map_err(|error| Box::new(contract_error(error)));
+    }
     let spec = V2FixtureSpec::parse(&request.last_user_content)
         .map_err(|error| Box::new(invalid_directive(error)))?;
     if let Err(error) = spec.validate_tools(&request.tool_names) {
@@ -222,7 +233,7 @@ fn upstream_error(status: StatusCode, message: &str) -> Response {
 }
 
 fn contract_error(error: ContractError) -> Response {
-    if error.code == code::INVALID_REQUEST {
+    if matches!(error.code, code::INVALID_REQUEST | code::NO_SUITABLE_TOOL) {
         invalid_request(error)
     } else {
         invalid_directive(error)

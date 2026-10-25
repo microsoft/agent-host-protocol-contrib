@@ -17,6 +17,38 @@ pub(crate) struct Draft {
 }
 
 impl Draft {
+    fn catalog_channel(&self) -> Option<&str> {
+        if self.rejection_reason.is_some()
+            || matches!(
+                self.action,
+                StateAction::ChatDelta(_)
+                    | StateAction::ChatToolCallDelta(_)
+                    | StateAction::ChatDraftChanged(_)
+                    | StateAction::ChatPendingMessageSet(_)
+                    | StateAction::ChatPendingMessageRemoved(_)
+                    | StateAction::ChatQueuedMessagesReordered(_)
+            )
+        {
+            return None;
+        }
+        if self.channel.starts_with("ahp-chat:/")
+            || matches!(
+                self.action,
+                StateAction::SessionChatAdded(_)
+                    | StateAction::SessionChatUpdated(_)
+                    | StateAction::SessionChatRemoved(_)
+            )
+        {
+            Some(&self.channel)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn updates_chat(&self, chat: &str) -> bool {
+        matches!(&self.action, StateAction::SessionChatUpdated(action) if action.chat == chat)
+    }
+
     pub(crate) fn action(
         channel: impl Into<Uri>,
         action: StateAction,
@@ -63,11 +95,25 @@ impl RedbHostStore {
     ) -> Result<CommittedTransition<T>, StoreError> {
         let database = self.database()?;
         let write = database.get()?.begin_write().map_err(backend)?;
-        let work = operation(&write)?;
+        let mut work = operation(&write)?;
         if work.drafts.is_empty() {
             return Err(StoreError::Backend(
                 "state transition must contain an action envelope".into(),
             ));
+        }
+        let channels = work
+            .drafts
+            .iter()
+            .filter_map(Draft::catalog_channel)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if !channels.is_empty() {
+            // The writer excludes concurrent commits; a reader still sees its pre-transition state.
+            let read = database.get()?.begin_read().map_err(backend)?;
+            let sessions = crate::catalog::affected_sessions(&read, &write, &channels)?;
+            let before = crate::catalog::catalogs_before(&read, &sessions)?;
+            let after = crate::catalog::catalogs(&write, &sessions)?;
+            crate::catalog::reconcile(&write, &before, &after, &mut work.drafts)?;
         }
         let envelopes = append(&write, work.drafts)?;
         write.commit().map_err(backend)?;

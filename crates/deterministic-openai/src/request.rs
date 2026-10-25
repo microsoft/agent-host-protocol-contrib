@@ -14,17 +14,25 @@ pub(crate) struct FixtureRequest {
     pub(crate) messages: Vec<RequestMessage>,
     pub(crate) stream: bool,
     pub(crate) tool_names: HashSet<String>,
+    pub(crate) tools: Vec<ToolDefinition>,
 }
 
 pub(crate) enum RequestMessage {
     User(String),
     Assistant(String),
     Tool(ToolResult),
+    Context(String),
     Other,
 }
 
 pub(crate) struct ToolResult {
     pub(crate) tool_call_id: String,
+    pub(crate) content: String,
+}
+
+pub(crate) struct ToolDefinition {
+    pub(crate) name: String,
+    pub(crate) parameters: Value,
 }
 
 impl FixtureRequest {
@@ -39,7 +47,7 @@ impl FixtureRequest {
     pub(super) fn finish(
         object: &Map<String, Value>,
         messages: Vec<RequestMessage>,
-        tool_names: HashSet<String>,
+        tools: Vec<ToolDefinition>,
         reasoning_effort: Option<String>,
     ) -> Result<Self, ContractError> {
         if messages.is_empty() {
@@ -76,7 +84,8 @@ impl FixtureRequest {
             last_user_index,
             messages,
             stream,
-            tool_names,
+            tool_names: tools.iter().map(|tool| tool.name.clone()).collect(),
+            tools,
         })
     }
 
@@ -146,12 +155,12 @@ pub(super) fn request_object(value: &Value) -> Result<&Map<String, Value>, Contr
 pub(super) fn parse_tools<F>(
     value: Option<&Value>,
     name: F,
-) -> Result<HashSet<String>, ContractError>
+) -> Result<Vec<ToolDefinition>, ContractError>
 where
-    F: Fn(&Map<String, Value>, &str) -> Result<String, ContractError>,
+    F: Fn(&Map<String, Value>, &str) -> Result<ToolDefinition, ContractError>,
 {
     let Some(value) = value else {
-        return Ok(HashSet::new());
+        return Ok(Vec::new());
     };
     let tools = value.as_array().ok_or_else(|| {
         ContractError::new(
@@ -160,6 +169,7 @@ where
         )
     })?;
     let mut names = HashSet::new();
+    let mut definitions = Vec::new();
     for (index, tool) in tools.iter().enumerate() {
         let path = format!("tools[{index}]");
         let object = tool.as_object().ok_or_else(|| {
@@ -171,14 +181,16 @@ where
                 format!("{path}.type must be \"function\""),
             ));
         }
-        if !names.insert(name(object, &path)?) {
+        let definition = name(object, &path)?;
+        if !names.insert(definition.name.clone()) {
             return Err(ContractError::new(
                 code::INVALID_REQUEST,
                 format!("{path} duplicates a function name"),
             ));
         }
+        definitions.push(definition);
     }
-    Ok(names)
+    Ok(definitions)
 }
 
 pub(super) fn item_object<'a>(

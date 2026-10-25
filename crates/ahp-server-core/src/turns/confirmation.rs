@@ -73,6 +73,7 @@ async fn await_approval_for(
         host.inner.approvals.lock().await.insert(
             key.clone(),
             PendingApproval {
+                session: started.session.clone(),
                 waiter_id,
                 presentation,
                 command,
@@ -112,13 +113,13 @@ pub(crate) async fn confirm_tool(
     action: StateAction,
     origin: Option<ahp_types::actions::ActionOrigin>,
 ) {
-    if !host.peer_is_subscribed(peer_id, channel).await {
+    if !host.peer_initialized(peer_id).await {
         reject(
             host,
             channel.into(),
             action,
             origin,
-            "tool confirmations require an initialized client subscribed to this chat",
+            "tool confirmations require an initialized client",
         )
         .await;
         return;
@@ -137,17 +138,15 @@ pub(crate) async fn confirm_tool(
             return;
         }
     };
-    let Some(option_id) = confirmation.selected_option_id.as_deref() else {
-        reject(
-            host,
-            channel.into(),
-            action,
-            origin,
-            "tool confirmation must select an advertised option",
-        )
-        .await;
-        return;
-    };
+    let option_id =
+        confirmation
+            .selected_option_id
+            .as_deref()
+            .unwrap_or(if confirmation.approved {
+                "allow-once"
+            } else {
+                "deny"
+            });
     if confirmation.turn_id.trim().is_empty()
         || confirmation.tool_call_id.trim().is_empty()
         || confirmation.edited_tool_input.is_some()
@@ -171,11 +170,15 @@ pub(crate) async fn confirm_tool(
     let _guard = host.inner.publish_lock.lock().await;
     let pending = {
         let waiters = host.inner.approvals.lock().await;
-        waiters
-            .get(&key)
-            .map(|waiter| (waiter.presentation.clone(), waiter.command.clone()))
+        waiters.get(&key).map(|waiter| {
+            (
+                waiter.session.clone(),
+                waiter.presentation.clone(),
+                waiter.command.clone(),
+            )
+        })
     };
-    let Some((presentation, command)) = pending else {
+    let Some((session, presentation, command)) = pending else {
         drop(_guard);
         reject(
             host,
@@ -187,6 +190,20 @@ pub(crate) async fn confirm_tool(
         .await;
         return;
     };
+    if !host.peer_is_subscribed(peer_id, channel).await
+        && !host.peer_is_subscribed(peer_id, &session).await
+    {
+        drop(_guard);
+        reject(
+            host,
+            channel.into(),
+            action,
+            origin,
+            "tool confirmations require a subscribed chat or owning session",
+        )
+        .await;
+        return;
+    }
     let option = confirmation_option(option_id);
     let (next_state, actions, decision, allow_command) = match option_id {
         "allow-once" | "always-allow-command" => {

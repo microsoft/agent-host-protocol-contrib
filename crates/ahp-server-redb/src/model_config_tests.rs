@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::{RedbHostStore, RedbStoreError};
 
+mod chat;
 mod draft;
 mod history;
 mod stability;

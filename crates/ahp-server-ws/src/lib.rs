@@ -80,7 +80,10 @@ async fn connection_task(socket: WebSocket, host: CoreHost) {
         tokio::select! {
             _ = shutdown.cancelled() => break,
             outbound = peer.recv() => {
-                let Some(outbound) = outbound else { break };
+                let Some(outbound) = outbound else {
+                    let _ = sender.send(Message::Close(None)).await;
+                    break;
+                };
                 if sender.send(Message::Text(outbound.into())).await.is_err() { break; }
             }
             inbound = receiver.next() => {

@@ -3,7 +3,7 @@
 use ahp_types::{
     common::ROOT_RESOURCE_URI,
     errors::{ahp_error_codes, json_rpc_error_codes},
-    SUPPORTED_PROTOCOL_VERSIONS,
+    negotiate_protocol_version, SUPPORTED_PROTOCOL_VERSIONS,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -140,14 +140,15 @@ async fn initialize(
         .and_then(Value::as_str)
         .filter(|client_id| !client_id.trim().is_empty())
         .ok_or_else(|| invalid_params("initialize requires a non-empty clientId"))?;
-    let versions = params
-        .get("protocolVersions")
-        .and_then(Value::as_array)
-        .ok_or_else(|| invalid_params("initialize requires protocolVersions"))?;
-    let version = versions
-        .iter()
-        .filter_map(Value::as_str)
-        .find(|version| SUPPORTED_PROTOCOL_VERSIONS.contains(version))
+    let versions: Vec<String> = serde_json::from_value(
+        params
+            .get("protocolVersions")
+            .cloned()
+            .ok_or_else(|| invalid_params("initialize requires protocolVersions"))?,
+    )
+    .map_err(|_| invalid_params("protocolVersions must be an array of strings"))?;
+    let version = negotiate_protocol_version(&versions)
+        .map_err(|message| invalid_params(&message))?
         .ok_or_else(|| RpcFault {
             code: ahp_error_codes::UNSUPPORTED_PROTOCOL_VERSION,
             message: "no mutually supported AHP protocol version".to_owned(),

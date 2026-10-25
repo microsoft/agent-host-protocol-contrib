@@ -6,8 +6,7 @@ use ahp_types::commands::{
 };
 use ahp_types::common::ROOT_RESOURCE_URI;
 use ahp_types::errors::ahp_error_codes;
-use ahp_types::state::SnapshotState;
-use ahp_types::SUPPORTED_PROTOCOL_VERSIONS;
+use ahp_types::{negotiate_protocol_version, SUPPORTED_PROTOCOL_VERSIONS};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -39,11 +38,8 @@ pub(super) async fn initialize(
             "initialize requires ahp-root:// and a non-empty clientId",
         ));
     }
-    let Some(version) = request
-        .protocol_versions
-        .iter()
-        .find(|version| SUPPORTED_PROTOCOL_VERSIONS.contains(&version.as_str()))
-        .cloned()
+    let Some(version) =
+        negotiate_protocol_version(&request.protocol_versions).map_err(RpcFault::invalid_params)?
     else {
         return Err(RpcFault {
             code: ahp_error_codes::UNSUPPORTED_PROTOCOL_VERSION,
@@ -143,13 +139,16 @@ pub(super) fn list_sessions(
             .ok_or_else(|| RpcFault::invalid_params("session-list limit must be positive"))
     })?;
     let end = offset.saturating_add(limit).min(items.len());
-    Ok(
-        json!({ "items": items[offset..end], "nextCursor": (end < items.len()).then(|| format!("offset:{end}")) }),
-    )
+    let mut result = json!({ "items": items[offset..end] });
+    if end < items.len() {
+        result["nextCursor"] = json!(format!("offset:{end}"));
+    }
+    Ok(result)
 }
 
 pub(super) async fn create_session(
     host: &CoreHost,
+    peer_id: u64,
     request: CreateSessionParams,
 ) -> Result<Value, RpcFault> {
     if !request.channel.starts_with("ahp-session:/") {
@@ -157,8 +156,15 @@ pub(super) async fn create_session(
             "createSession channel must be an ahp-session URI",
         ));
     }
-    if request.active_client.is_some() {
-        return Err(RpcFault::invalid_params("active clients are unsupported"));
+    if let Some(active_client) = &request.active_client {
+        let origin = host.peer_origin(peer_id, 0).await;
+        if origin.as_ref().map(|origin| origin.client_id.as_str())
+            != Some(active_client.client_id.as_str())
+        {
+            return Err(RpcFault::invalid_params(
+                "activeClient.clientId must match the initialized clientId",
+            ));
+        }
     }
     let provider = request.provider.unwrap_or_else(|| "openai".into());
     if provider != "openai" {
@@ -191,6 +197,18 @@ pub(super) async fn create_session(
         .map_err(RpcFault::store)?;
     let session = transition.value.session.clone();
     host.fanout(&transition).await;
+    if let Some(active_client) = request.active_client {
+        let active = host
+            .inner
+            .store
+            .change_session(crate::ChangeSession {
+                session: session.clone(),
+                mutation: crate::SessionMutation::ActiveClientSet(active_client),
+                origin: None,
+            })
+            .map_err(RpcFault::store)?;
+        host.fanout(&active).await;
+    }
     let summary = host
         .inner
         .store
@@ -220,14 +238,35 @@ pub(super) async fn create_chat(
             "createChat requires AHP session and chat URIs",
         ));
     }
-    if request.source.is_some()
-        || request.initial_message.is_some()
-        || request.working_directories.is_some()
-    {
+    if request.source.is_some() || request.working_directories.is_some() {
         return Err(RpcFault::invalid_params(
-            "chat sources, initial messages, and per-chat workspaces are unsupported",
+            "chat sources and per-chat workspaces are unsupported",
         ));
     }
+    let mut initial_message = request.initial_message;
+    if let Some(message) = &mut initial_message {
+        if !matches!(message.origin.kind, ahp_types::state::MessageKind::User) {
+            return Err(RpcFault::invalid_params(
+                "initialMessage must be user-authored",
+            ));
+        }
+        let selection = match &message.model {
+            Some(selection) => selection.clone(),
+            None => {
+                let state = snapshot(host, request.channel.clone())?;
+                host.inner
+                    .model_catalog
+                    .require_selection(state["state"]["config"]["values"].as_object())
+                    .map_err(|error| RpcFault::invalid_params(error.to_string()))?
+            }
+        };
+        host.inner
+            .model_catalog
+            .validate_selection(&selection)
+            .map_err(|error| RpcFault::invalid_params(error.to_string()))?;
+        message.model = Some(selection);
+    }
+    let chat_uri = request.chat.clone();
     let transition = host
         .inner
         .store
@@ -237,6 +276,22 @@ pub(super) async fn create_chat(
         })
         .map_err(RpcFault::store)?;
     host.fanout(&transition).await;
+    if let Some(message) = initial_message {
+        crate::turns::start_turn_locked(
+            host,
+            &chat_uri,
+            ahp_types::actions::ChatTurnStartedAction {
+                turn_id: Uuid::new_v4().to_string(),
+                started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                message,
+                queued_message_id: None,
+                meta: None,
+            },
+            None,
+        )
+        .await
+        .map_err(RpcFault::invalid_params)?;
+    }
     Ok(Value::Null)
 }
 
@@ -263,6 +318,8 @@ pub(super) async fn dispose_session(
         .lock()
         .await
         .retain(|key, _| !disposed.chats.contains(&key.chat));
+    drop(cancellations);
+    host.fanout(&transition).await;
     let mut peers = host.inner.peers.lock().await;
     for peer in peers.values_mut() {
         peer.subscriptions.remove(&disposed.session);
@@ -271,8 +328,6 @@ pub(super) async fn dispose_session(
         }
     }
     drop(peers);
-    drop(cancellations);
-    host.fanout(&transition).await;
     host.broadcast_notification(
         ROOT_RESOURCE_URI,
         "root/sessionRemoved",
@@ -283,10 +338,11 @@ pub(super) async fn dispose_session(
 }
 
 pub(super) fn fetch_turns(host: &CoreHost, request: FetchTurnsParams) -> Result<Value, RpcFault> {
-    if !matches!(
-        snapshot(host, request.channel.clone())?.state,
-        SnapshotState::Chat(_)
-    ) {
+    if !request.channel.starts_with("ahp-chat:/")
+        || snapshot(host, request.channel.clone())?["state"]["turns"]
+            .as_array()
+            .is_none()
+    {
         return Err(RpcFault::invalid_params(
             "fetchTurns must target an AHP chat channel",
         ));

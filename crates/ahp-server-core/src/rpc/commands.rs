@@ -34,6 +34,19 @@ pub(super) async fn process_request(
             add_subscriptions(host, peer_id, [request.channel]).await;
             Ok(json!({ "snapshot": snapshot }))
         }
+        "resourceRead"
+        | "resourceWrite"
+        | "resourceList"
+        | "resourceMkdir"
+        | "resourceDelete"
+        | "resourceMove"
+        | "resourceCopy"
+        | "resourceResolve"
+        | "resourceRequest"
+        | "createResourceWatch" => {
+            require_initialized(host, peer_id).await?;
+            crate::resources::request(host, peer_id, request).await
+        }
         "listSessions" => {
             require_initialized(host, peer_id).await?;
             session::list_sessions(host, params(&request)?)
@@ -48,7 +61,7 @@ pub(super) async fn process_request(
         }
         "createSession" => {
             require_initialized(host, peer_id).await?;
-            session::create_session(host, params(&request)?).await
+            session::create_session(host, peer_id, params(&request)?).await
         }
         "createChat" => {
             require_initialized(host, peer_id).await?;
@@ -97,18 +110,31 @@ pub(super) async fn process_notification(
     Ok(())
 }
 
-pub(super) fn snapshot(
-    host: &CoreHost,
-    channel: String,
-) -> Result<ahp_types::state::Snapshot, RpcFault> {
-    host.inner
+pub(super) fn snapshot(host: &CoreHost, channel: String) -> Result<Value, RpcFault> {
+    if channel.starts_with("ahp-resource-watch:/") {
+        return host
+            .inner
+            .resources
+            .snapshot(
+                &channel,
+                host.inner
+                    .store
+                    .server_sequence()
+                    .map_err(RpcFault::store)?,
+            )
+            .ok_or_else(|| RpcFault::not_found(channel))
+            .and_then(|snapshot| serde_json::to_value(snapshot).map_err(RpcFault::internal));
+    }
+    let snapshot = host
+        .inner
         .store
         .snapshot(SnapshotRequest {
-            channel,
+            channel: channel.clone(),
             model_catalog: host.inner.model_catalog.clone(),
             server_tools: host.inner.profile.server_tools(),
         })
-        .map_err(RpcFault::store)
+        .map_err(RpcFault::store)?;
+    serde_json::to_value(snapshot).map_err(RpcFault::internal)
 }
 
 pub(super) async fn add_subscriptions(
@@ -118,6 +144,9 @@ pub(super) async fn add_subscriptions(
 ) {
     let channels = channels.into_iter().collect::<Vec<_>>();
     if let Some(peer) = host.inner.peers.lock().await.get_mut(&peer_id) {
+        for channel in &channels {
+            host.inner.resources.subscribe(peer_id, channel);
+        }
         peer.subscriptions.extend(channels);
     }
 }

@@ -11,7 +11,7 @@ async fn persists_config_changes_and_records_effective_turn_models(
         1,
         "initialize",
         json!({
-            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.9.0"],
+            "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["1.0.0"],
             "initialSubscriptions": ["ahp-root://"]
         }),
     )

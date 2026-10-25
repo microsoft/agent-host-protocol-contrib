@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use super::contract::{code, ContractError};
 use super::request::{
     item_object, non_empty_string, parse_tools, reasoning_effort, request_object, required_array,
-    required_string, FixtureRequest, RequestMessage, ToolResult,
+    required_string, FixtureRequest, RequestMessage, ToolDefinition, ToolResult,
 };
 
 pub(super) fn parse(value: Value) -> Result<FixtureRequest, ContractError> {
@@ -73,10 +73,19 @@ fn parse_item(
                     format!("input[{index}].call_id has no preceding pending function call"),
                 ));
             }
-            required_string(object, "output", &format!("input[{index}].output"))?;
-            Ok(RequestMessage::Tool(ToolResult { tool_call_id: id }))
+            let content =
+                required_string(object, "output", &format!("input[{index}].output"))?.to_owned();
+            Ok(RequestMessage::Tool(ToolResult {
+                tool_call_id: id,
+                content,
+            }))
         }
-        Some(_) => Ok(RequestMessage::Other),
+        Some(_) => Ok(object
+            .get("content")
+            .and_then(Value::as_str)
+            .map_or(RequestMessage::Other, |content| {
+                RequestMessage::Context(content.to_owned())
+            })),
         None => match required_string(object, "role", &format!("input[{index}].role"))? {
             "user" => Ok(RequestMessage::User(
                 required_string(object, "content", &format!("input[{index}].content"))?.to_owned(),
@@ -84,11 +93,19 @@ fn parse_item(
             "assistant" => Ok(RequestMessage::Assistant(
                 required_string(object, "content", &format!("input[{index}].content"))?.to_owned(),
             )),
-            _ => Ok(RequestMessage::Other),
+            _ => Ok(object
+                .get("content")
+                .and_then(Value::as_str)
+                .map_or(RequestMessage::Other, |content| {
+                    RequestMessage::Context(content.to_owned())
+                })),
         },
     }
 }
 
-fn tool_name(object: &Map<String, Value>, path: &str) -> Result<String, ContractError> {
-    non_empty_string(object, "name", &format!("{path}.name"))
+fn tool_name(object: &Map<String, Value>, path: &str) -> Result<ToolDefinition, ContractError> {
+    Ok(ToolDefinition {
+        name: non_empty_string(object, "name", &format!("{path}.name"))?,
+        parameters: object.get("parameters").cloned().unwrap_or(Value::Null),
+    })
 }

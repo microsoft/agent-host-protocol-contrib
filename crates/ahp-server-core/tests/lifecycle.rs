@@ -152,6 +152,42 @@ async fn response(peer: &mut ahp_server_core::CorePeer, id: u64) {
     }
 }
 
+#[tokio::test]
+async fn initialize_negotiates_compatible_versions_and_rejects_malformed_offers() {
+    let (host, _) = host(Vec::new(), 128);
+    for (versions, expected) in [
+        (json!(["0.9.0", "1.0.0"]), Some("1.0.0")),
+        (json!(["1.0.0", "1.2.3", "1.1.9", "2.0.0"]), Some("1.2.3")),
+        (json!(["0.9.7", "0.10.0"]), Some("0.9.7")),
+        (json!(["1.0.0", "invalid"]), None),
+        (json!(["01.0.0"]), None),
+        (json!(["1.0.0", 1]), None),
+    ] {
+        let mut peer = host.open_peer().await;
+        message(
+            &host,
+            peer.id(),
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "channel": "ahp-root://", "clientId": "negotiation-test",
+                    "protocolVersions": versions,
+                }
+            }),
+        )
+        .await;
+        let reply = next(&mut peer).await;
+        if let Some(version) = expected {
+            assert_eq!(reply["result"]["protocolVersion"], version);
+        } else {
+            assert_eq!(
+                reply["error"]["code"],
+                ahp_types::errors::json_rpc_error_codes::INVALID_PARAMS
+            );
+        }
+    }
+}
+
 async fn initialized_session(
     host: &CoreHost,
     store: &MemoryHostStore,
@@ -159,7 +195,7 @@ async fn initialized_session(
 ) -> String {
     message(host, peer.id(), json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": { "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["0.9.0"], "initialSubscriptions": ["ahp-root://"] }
+        "params": { "channel": "ahp-root://", "clientId": "client", "protocolVersions": ["1.0.0"], "initialSubscriptions": ["ahp-root://"] }
     })).await;
     response(peer, 1).await;
     message(
@@ -425,3 +461,12 @@ async fn shutdown_and_wait_drains_a_pending_turn_without_polling() {
     let drained = timeout(Duration::from_secs(1), host.shutdown_and_wait()).await;
     assert!(matches!(drained, Ok(Ok(()))));
 }
+
+#[path = "lifecycle/session_state.rs"]
+mod session_state;
+
+#[path = "lifecycle/chat_state.rs"]
+mod chat_state;
+
+#[path = "lifecycle/client_tools.rs"]
+mod client_tools;

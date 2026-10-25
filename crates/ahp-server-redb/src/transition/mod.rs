@@ -2,6 +2,7 @@
 
 mod chat;
 mod draft;
+mod pending;
 mod response;
 mod terminal;
 mod tool;
@@ -55,7 +56,9 @@ pub(super) fn summary_draft(chat: &PersistedChat) -> Draft {
                 status: Some(summary.status),
                 activity: summary.activity,
                 modified_at: Some(summary.modified_at),
+                changes: None,
                 origin: None,
+                movable: None,
                 interactivity: None,
                 working_directories: None,
             },

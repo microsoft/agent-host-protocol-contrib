@@ -51,7 +51,7 @@ async fn tool_first_round_retains_the_empty_initial_markdown_before_final_text(
         "initialize",
         json!({
             "channel": "ahp-root://", "clientId": "tool-first-client",
-            "protocolVersions": ["0.9.0"], "initialSubscriptions": ["ahp-root://"]
+            "protocolVersions": ["1.0.0"], "initialSubscriptions": ["ahp-root://"]
         }),
     )
     .await?;

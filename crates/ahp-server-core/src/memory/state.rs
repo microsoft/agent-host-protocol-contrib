@@ -42,6 +42,10 @@ impl Default for Data {
 
 #[derive(Clone)]
 pub(super) struct Session {
+    pub(super) title: String,
+    pub(super) status_flags: u32,
+    pub(super) active_clients: Vec<ahp_types::state::SessionActiveClient>,
+    pub(super) input_needed: Vec<ahp_types::state::SessionInputRequest>,
     pub(super) uri: Uri,
     pub(super) provider: String,
     pub(super) workspace: Uri,
@@ -65,6 +69,10 @@ impl Session {
             workspace,
             created_at,
             ready: false,
+            title: "New OpenAI-compatible session".into(),
+            status_flags: 0,
+            active_clients: Vec::new(),
+            input_needed: Vec::new(),
             model_selection,
             chats: Vec::new(),
         }
@@ -77,9 +85,14 @@ pub(super) struct Chat {
     pub(super) session: Uri,
     pub(super) modified_at: String,
     pub(super) turns: Vec<StoredTurn>,
+    pub(super) materialized_attachments: BTreeMap<String, Vec<Turn>>,
     pub(super) active: Option<Active>,
     pub(super) draft: Option<Message>,
     pub(super) model_cursor: Option<ModelCursor>,
+    pub(super) pending: crate::PendingMessages,
+    pub(super) status_reset: bool,
+    pub(super) status_flags: u32,
+    pub(super) working_directories: Option<Vec<Uri>>,
 }
 
 impl Chat {
@@ -89,9 +102,14 @@ impl Chat {
             session,
             modified_at: timestamp,
             turns: Vec::new(),
+            materialized_attachments: BTreeMap::new(),
             active: None,
             draft: None,
             model_cursor: None,
+            pending: crate::PendingMessages::default(),
+            status_reset: false,
+            status_flags: 0,
+            working_directories: None,
         }
     }
 }

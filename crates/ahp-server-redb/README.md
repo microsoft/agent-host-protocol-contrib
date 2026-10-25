@@ -14,9 +14,50 @@ Replay is retained for 2,048 envelopes; older cursors return
 turns. Both limits intentionally match the existing host behavior and are
 fixed rather than configuration surface.
 
-Chat and session summaries follow AHP 0.8 status reduction: a pending tool or
+Chat and session summaries follow AHP 1.0 status reduction: a pending tool or
 result confirmation reports `InputNeeded`, and a session promotes blocked or
 error state from any child chat even when its newest/default chat is idle.
+
+Session titles and independent read/archive bits survive database reopen.
+Chat read flags are persisted independently from session and sibling flags;
+starting a turn clears the chat's read bit. Session catalogs include the chat's
+working directories and root summaries expose the complete ordered compact
+catalog with exact statuses and the default chat.
+
+Tool confirmations and client-tool execution requests are mirrored into the
+session input queue in the same transaction as their chat state and journal.
+Upserts preserve input queue order; resolution, cancellation, truncation, and
+restart recovery journal removals alongside the corresponding chat actions.
+Catalog reconciliation loads only sessions addressed by catalog-affecting actions;
+text/tool-input deltas and non-catalog mutations skip reconciliation entirely.
+Session disposal journals one `session/chatRemoved` per catalog entry before
+the root active-session count update.
+Active-client membership is committed with its action envelopes, but restart
+recovery clears disconnected clients and journals their removals atomically
+with interrupted-turn recovery. Older records default to no metadata flags or
+active clients. Optional activity strings are consistently omitted from chat
+and session projections.
+
+AHP 1.0's single steering-message slot and independent ordered queue survive
+restart. Steering replacement, queued upserts, kind-specific removals, queue
+reorders, and history truncation commit atomically with
+their replay actions. Starting a queued turn atomically removes its pending
+entry and journals removal before `chat/turnStarted`. Truncation also drops
+provider continuation state. Terminal `modifiedAt` is derived from the recorded
+`startedAt` plus the journaled duration, including restart recovery; implicit
+tool cancellation preserves input without inventing a reason message.
+
+Chat attachment transcripts are materialized in the same transaction that accepts
+the containing turn or pending message. Pinned context is persisted separately
+from wire messages, survives reopen and source pruning, and never recursively
+expands nested chat references. Messages are limited to 16 chat attachments and
+1 MiB of total serialized transcript context, with duplicate resource/bound pairs
+materialized only once; rejection commits no records or replay actions. Legacy
+records default to no materialized context.
+Client-tool live-content replacements and completions validate execution ownership
+inside their write transaction and journal the matching action atomically,
+including structured results. Interrupted client calls follow ordinary turn
+recovery and cannot leave a resumed process waiting on a disconnected executor.
 
 Existing JSON session/chat records remain readable, including old turns that
 store `response` without `response_parts`. The legacy

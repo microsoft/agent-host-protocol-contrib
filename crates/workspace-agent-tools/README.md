@@ -14,7 +14,9 @@ workspace must be a canonical `file:` URI for an existing directory beneath one 
 those roots. `replace_string` accepts only a non-empty relative path, resolves it
 canonically, rejects escapes (including symlink escapes), requires a regular UTF-8
 file of at most 1 MiB, and replaces exactly one occurrence through a same-directory
-temporary file before replacing the target.
+temporary file before replacing the target. Its AHP 1.0 file-edit result includes
+an `after` side with the canonical file URI and a typed content reference; no
+before-content snapshot or diff statistics are retained.
 
 `run_shell` uses the selected workspace only as its current working directory. **It
 is not an OS sandbox**: a command can read or write paths outside that directory and

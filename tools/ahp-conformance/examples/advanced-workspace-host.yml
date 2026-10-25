@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=../conformance.schema.json
+# Run from tools/ahp-conformance: node src/cli.ts examples/advanced-workspace-host.yml
+# The internal deterministic-openai fixture needs no API credentials.
+target:
+  url: ws://127.0.0.1:18787/ahp
+host:
+  cwd: ../../..
+  command: 'cargo run -p advanced-workspace-host -- --demo --bind 127.0.0.1:18787 --database "${scratchDir}/host.redb" --workspace-root "${scratchDir}"'
+  readyTimeoutMs: 120000
+model:
+  enabled: true
+  deterministic: true
+workspace:
+  sharedFilesystem: true
+  keep: false
+report:
+  reporter: auto

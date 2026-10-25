@@ -88,6 +88,17 @@ pub enum StoreConflict {
         /// Turn identifier.
         turn: String,
     },
+    /// An attachment bound does not identify a completed retained source turn.
+    #[error("chat attachment endTurn {end_turn:?} is not a completed retained turn in {chat:?}")]
+    InvalidChatAttachment {
+        /// Referenced chat channel.
+        chat: Uri,
+        /// Invalid terminal bound.
+        end_turn: String,
+    },
+    /// A message exceeds the host's attachment count or transcript byte budget.
+    #[error("chat attachment limit exceeded: {0}")]
+    ChatAttachmentLimitExceeded(String),
     /// A model reused a previously durable tool-call identifier.
     #[error("duplicate tool call id {tool_call_id:?} in chat {chat:?}")]
     DuplicateToolCallId {
@@ -131,6 +142,66 @@ pub struct SnapshotRequest {
     pub model_catalog: ModelCatalog,
     /// Server tools to expose in session state.
     pub server_tools: Vec<ahp_types::state::ToolDefinition>,
+}
+
+/// A client-dispatchable session metadata or membership change.
+#[derive(Clone, Debug)]
+pub enum SessionMutation {
+    /// Replaces the session title.
+    Title(String),
+    /// Sets the independent read flag.
+    IsRead(bool),
+    /// Sets the independent archived flag.
+    IsArchived(bool),
+    /// Adds or replaces a client, keyed by its identifier.
+    ActiveClientSet(ahp_types::state::SessionActiveClient),
+    /// Removes a client, if present.
+    ActiveClientRemoved(String),
+}
+
+impl SessionMutation {
+    /// The canonical action committed with this mutation.
+    #[must_use]
+    pub fn action(&self) -> StateAction {
+        use ahp_types::actions::{
+            SessionActiveClientRemovedAction, SessionActiveClientSetAction,
+            SessionIsArchivedChangedAction, SessionIsReadChangedAction, SessionTitleChangedAction,
+        };
+        match self {
+            Self::Title(title) => StateAction::SessionTitleChanged(SessionTitleChangedAction {
+                title: title.clone(),
+            }),
+            Self::IsRead(is_read) => {
+                StateAction::SessionIsReadChanged(SessionIsReadChangedAction { is_read: *is_read })
+            }
+            Self::IsArchived(is_archived) => {
+                StateAction::SessionIsArchivedChanged(SessionIsArchivedChangedAction {
+                    is_archived: *is_archived,
+                })
+            }
+            Self::ActiveClientSet(active_client) => {
+                StateAction::SessionActiveClientSet(SessionActiveClientSetAction {
+                    active_client: active_client.clone(),
+                })
+            }
+            Self::ActiveClientRemoved(client_id) => {
+                StateAction::SessionActiveClientRemoved(SessionActiveClientRemovedAction {
+                    client_id: client_id.clone(),
+                })
+            }
+        }
+    }
+}
+
+/// A persisted session change and its originating client sequence.
+#[derive(Clone, Debug)]
+pub struct ChangeSession {
+    /// Session channel whose state changes.
+    pub session: Uri,
+    /// Validated metadata or membership update.
+    pub mutation: SessionMutation,
+    /// Originating client sequence, if supplied.
+    pub origin: Option<ActionOrigin>,
 }
 
 /// Input for durable session creation.
@@ -208,6 +279,12 @@ pub struct StartedTurn {
     pub history: Vec<ahp_types::state::Turn>,
     /// Last successful response in the same configured upstream scope.
     pub model_cursor: Option<ModelCursor>,
+    /// Immutable attachment transcripts, keyed by the containing turn identifier.
+    pub materialized_attachments: std::collections::BTreeMap<String, Vec<ahp_types::state::Turn>>,
+    /// Owning session.
+    pub session: Uri,
+    /// Registered client tool definitions, preferring the starting client.
+    pub client_tools: Vec<crate::ClientTool>,
     /// Original user message.
     pub message: ahp_types::state::Message,
     /// Persisted session workspace.
@@ -343,10 +420,35 @@ pub struct ApprovalKey {
 /// `ActionEnvelope`s in one crash-atomic commit. Returning `Ok` means the
 /// envelopes are safe to fan out; core never publishes speculative actions.
 pub trait HostStore: Send + Sync {
+    /// Atomically validates the owner and updates a running client tool.
+    fn change_client_tool(
+        &self,
+        _request: crate::ChangeClientTool,
+    ) -> Result<CommittedTransition<()>, StoreError> {
+        Err(StoreError::Backend(
+            "client tools are not supported by this store".into(),
+        ))
+    }
+    /// Atomically updates session state and journals its corresponding action.
+    fn change_session(&self, request: ChangeSession)
+        -> Result<CommittedTransition<()>, StoreError>;
+    /// Allocates a durable sequence and replay entry for a resource watch update.
+    fn publish_resource_change(
+        &self,
+        channel: Uri,
+        action: ahp_types::actions::ResourceWatchChangedAction,
+    ) -> Result<CommittedTransition<()>, StoreError>;
     /// Current durable server sequence.
     fn server_sequence(&self) -> Result<i64, StoreError>;
     /// Gets a typed root, session, or chat snapshot.
     fn snapshot(&self, request: SnapshotRequest) -> Result<Snapshot, StoreError>;
+    /// Reads queued messages and the independent steering-message slot.
+    fn pending_messages(&self, chat: &str) -> Result<crate::PendingMessages, StoreError>;
+    /// Atomically changes pending input or truncates retained chat history.
+    fn change_chat(
+        &self,
+        request: crate::ChangeChat,
+    ) -> Result<CommittedTransition<()>, StoreError>;
     /// Reads a durable replay range.
     fn replay_since(&self, sequence: i64) -> Result<ActionReplay, StoreError>;
     /// Lists root session summaries.

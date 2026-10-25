@@ -28,13 +28,15 @@ and `content`. Chat tools use the nested
 `{ "type": "function_call", "call_id", "name", "arguments" }`, and results use
 `{ "type": "function_call_output", "call_id", "output" }`. Responses tools are
 flattened `{ "type": "function", "name", "description", "parameters" }`.
-Other request properties and extension roles are ignored. The last user item
+Other request properties and extension roles do not control directive selection.
+Text from extension roles is retained for v4 phrase recall. The last user item
 controls fixture behavior.
 
 Use exactly one immutable, complete-line directive block. The directives are
 **exact syntax**: preserve their marker, capitalization, punctuation, and JSON
 literals. Natural-language text outside the block and tool-result content are
-**semantic** model context, not fixture directives.
+**semantic** model context, not fixture directives, except for the exact
+`Remember this phrase: <JSON string>` history lines recognized by v4 recall.
 
 ## v1 text responses
 
@@ -116,8 +118,65 @@ OpenAI-shaped HTTP 400 `invalid_request_error` with stable code
 `AHP_MOCK_UNKNOWN_TOOL`; malformed v2 directives retain
 `mock_directive_error` and `AHP_TEST_INVALID_DIRECTIVE`.
 
+## v3 conversation history
+
+```text
+[AHP-TEST v3]
+Repeat the previous assistant response exactly.
+[/AHP-TEST]
+```
+
+Returns the previous assistant text before the directive-bearing user message.
+
+## v4 phrase recall and file tools
+
+v4 accepts exactly one of these directives per complete-line block. The same
+natural-language prompts work with real models and with the fixture.
+
+To recall the last phrase established by an earlier complete line
+`Remember this phrase: <JSON string>` in any input role:
+
+```text
+[AHP-TEST v4]
+Recall the phrase I asked you to remember and respond with only that phrase.
+[/AHP-TEST]
+```
+
+The last matching history line before the current user message wins. A missing
+phrase returns HTTP 400 `AHP_TEST_INVALID_DIRECTIVE`.
+
+To read or create a file through an available tool:
+
+```text
+[AHP-TEST v4]
+Read the file at JSON path: "/workspace/input.txt" with an available tool, then respond with only its exact contents.
+[/AHP-TEST]
+```
+
+```text
+[AHP-TEST v4]
+Create the file at JSON path: "/workspace/output.txt" containing JSON text: "exact contents\n" with an available tool, then respond with only the word done.
+[/AHP-TEST]
+```
+
+Paths and contents are JSON strings. The fixture prefers appropriately named
+file tools with string path/content properties, otherwise uses a string
+`command`/`cmd` shell tool. Read fallback: `cat -- '<path>'`. Write fallback:
+`printf '%s' '<text>' > '<path>'`. Values use POSIX single-quote escaping; the
+advanced workspace host's `run_shell` schema supports these fallbacks.
+No suitable tool returns HTTP 400 `invalid_request_error` with
+`AHP_TEST_NO_SUITABLE_TOOL`.
+
+Calls use ID `ahp-test-tool-1` and v2's result placement and ID validation.
+After the tool result, reads return the result content verbatim and writes
+return `done`. Subsequent requests need not repeat tool definitions. Both APIs
+support streaming and non-streaming v4 output. v4 does not support optional
+`Wait` or `Stream` directive lines. See the
+[immutable library contracts](../../crates/deterministic-openai/README.md#v4-phrase-recall-and-file-tools)
+for exact tool/property precedence and history matching.
+
 **Audience:** developers manually running deterministic model behavior. Start
-with the v1 text contract, use v2 only when testing sequential tools, then run
-the [conformance runner](../ahp-conformance/README.md). Library users should
-read [`deterministic-openai-fixture`](../../crates/deterministic-openai/README.md)
-next.
+with the v1 text contract, use v2 for sequential tools or v4 for recall and file
+operations, then run the [TypeScript conformance CLI](../ahp-conformance/README.md).
+Library users should read
+[`deterministic-openai-fixture`](../../crates/deterministic-openai/README.md) next.

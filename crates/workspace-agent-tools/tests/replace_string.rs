@@ -28,10 +28,23 @@ async fn replaces_once_and_converts_to_ahp_result() -> Result<(), Box<dyn std::e
         fs::read_to_string(root.path().join("sample.txt"))?,
         "before new after"
     );
-    assert!(result
+    let edit = result
         .content
         .iter()
-        .any(|content| matches!(content, ToolResultContent::FileEdit(_))));
+        .find_map(|content| match content {
+            ToolResultContent::FileEdit(edit) => Some(edit),
+            _ => None,
+        })
+        .ok_or("replacement did not return a file edit")?;
+    let after = edit.after.as_ref().ok_or("file edit has no after side")?;
+    let expected_uri = url::Url::from_file_path(workspace.path().join("sample.txt"))
+        .map_err(|()| "invalid test file URI")?;
+    assert_eq!(after.uri, expected_uri.as_str());
+    assert_eq!(after.content.uri, after.uri);
+    assert_eq!(after.content.size_hint, Some(16));
+    assert_eq!(after.content.content_type.as_deref(), Some("text/plain"));
+    assert!(edit.before.is_none());
+    assert!(edit.diff.is_none());
     let ahp = result.to_call_result();
     assert!(ahp.success);
     Ok(())
