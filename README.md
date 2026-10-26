@@ -150,9 +150,9 @@ and the deterministic fixture. See its README for configuration and reports.
 Run Rust checks once from the repository root, then frontend and plugin checks:
 
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
 
 pushd samples/web/ahp-chat
 npm ci
@@ -164,6 +164,39 @@ popd
 python -c 'import json; json.load(open("plugins/ahp-development/plugin.json"))'
 find plugins/ahp-development/skills -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/SKILL.md' \; -print
 ```
+
+## Continuous integration and merge requirements
+
+[GitHub Actions CI](.github/workflows/ci.yml) runs on every pull request, push to
+`main`, and merge-queue group. It has no path filters, so documentation-only PRs
+also produce the check required for merging.
+
+| Job | Checks |
+| --- | --- |
+| Rust | rustfmt, Clippy with warnings denied, compilation of all targets/features, workspace and documentation tests. |
+| Web sample | Existing Oxlint rules, Vitest tests, TypeScript compilation, and Vite production build on Node 24. |
+| TypeScript tools | Typechecks, builds, tests, and installed npm-artifact checks; CLI on Node 22/24 and conformance on Node 24. |
+| Plugin metadata | Valid JSON manifest and a `SKILL.md` entrypoint for every skill. |
+
+The final **Required CI** job runs even when another job fails. It succeeds only
+when every validation job succeeds; failed, cancelled, or skipped dependencies
+block it. Existing frontend lint warnings remain warnings under its checked-in
+Oxlint configuration. No new JavaScript linter is imposed on the CLI or conformance
+suite; their existing strict TypeScript checks run instead.
+
+Workflow YAML alone cannot require checks before merging. A repository
+administrator must apply the [main-branch ruleset](.github/rulesets/main.json):
+
+```sh
+gh api --method POST repos/microsoft/agent-host-protocol-contrib/rulesets \
+  --input .github/rulesets/main.json
+```
+
+The ruleset requires pull requests, an up-to-date branch, and the **Required CI**
+check from the GitHub Actions app. It does not require reviewer approvals.
+Apply it once; if the repository already has equivalent rules, update those
+instead of creating duplicates. The Azure DevOps npm publishing pipelines remain
+manual-only and are separate from these merge checks.
 
 For an end-to-end local stack with Node 24+ (no build step), run:
 
