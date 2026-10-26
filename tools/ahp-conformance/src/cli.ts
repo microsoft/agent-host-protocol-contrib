@@ -61,7 +61,7 @@ async function main(): Promise<number> {
   const path = resolve(positionals[0] ?? 'ahp-conformance.yml');
   if (values.init) {
     await writeTemplate(path);
-    console.log(`Created ${path}. Set target.url, then run node src/cli.ts ${JSON.stringify(path)}.`);
+    console.log(`Created ${path}. Set target.url, then run ahp-conformance ${JSON.stringify(path)}.`);
     return 0;
   }
   if (values.list) {

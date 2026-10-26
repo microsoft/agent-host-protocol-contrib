@@ -1,0 +1,45 @@
+name: TypeScript tools
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tools/ahp-cli/**
+      - tools/ahp-conformance/**
+      - .github/workflows/typescript-tools.yml
+  pull_request:
+    paths:
+      - tools/ahp-cli/**
+      - tools/ahp-conformance/**
+      - .github/workflows/typescript-tools.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: ahp-cli
+            node: 22
+          - package: ahp-cli
+            node: 24
+          - package: ahp-conformance
+            node: 24
+    defaults:
+      run:
+        working-directory: tools/${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: tools/${{ matrix.package }}/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
