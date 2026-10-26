@@ -1,12 +1,6 @@
 name: $(Date:yyyyMMdd)$(Rev:.r)
 
-trigger:
-  branches:
-    exclude:
-      - "*"
-  tags:
-    include:
-      - cli/v*
+trigger: none
 pr: none
 
 resources:
