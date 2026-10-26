@@ -21,9 +21,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Result<Self> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(format!("ahp-context-{}.redb", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("ahp-context-{}.redb", Uuid::new_v4()));
         let store = RedbHostStore::open(&path)?;
         Ok(Self { path, store })
     }

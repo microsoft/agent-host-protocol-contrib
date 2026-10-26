@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Compile and lint all targets
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Run workspace and documentation tests
+        run: cargo test --workspace --all-features --locked
+
+  web:
+    name: Web sample
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: samples/web/ahp-chat
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: samples/web/ahp-chat/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  typescript:
+    name: TypeScript tools (${{ matrix.package }}, Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: ahp-cli
+            node: 22
+          - package: ahp-cli
+            node: 24
+          - package: ahp-conformance
+            node: 24
+    defaults:
+      run:
+        working-directory: tools/${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: tools/${{ matrix.package }}/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  plugin:
+    name: Plugin metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate manifest and skill entrypoints
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          plugin = Path("plugins/ahp-development")
+          json.loads((plugin / "plugin.json").read_text())
+          skills = [path for path in (plugin / "skills").iterdir() if path.is_dir()]
+          if not skills:
+              raise SystemExit("The plugin has no skills")
+          for skill in skills:
+              if not (skill / "SKILL.md").is_file():
+                  raise SystemExit(f"Missing skill entrypoint: {skill / 'SKILL.md'}")
+          print(f"Validated plugin manifest and {len(skills)} skills")
+          PY
+
+  required:
+    name: Required CI
+    if: ${{ always() }}
+    needs: [rust, web, typescript, plugin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RUST_RESULT: ${{ needs.rust.result }}
+      WEB_RESULT: ${{ needs.web.result }}
+      TYPESCRIPT_RESULT: ${{ needs.typescript.result }}
+      PLUGIN_RESULT: ${{ needs.plugin.result }}
+    steps:
+      - name: Require every validation job to pass
+        run: |
+          for check in "Rust:$RUST_RESULT" "Web:$WEB_RESULT" "TypeScript:$TYPESCRIPT_RESULT" "Plugin:$PLUGIN_RESULT"; do
+            if [ "${check#*:}" != "success" ]; then
+              echo "::error::Required validation did not pass: $check"
+              exit 1
+            fi
+          done

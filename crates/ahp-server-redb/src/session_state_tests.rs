@@ -18,9 +18,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(format!("ahp-session-state-{}.redb", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("ahp-session-state-{}.redb", Uuid::new_v4()));
         let store = RedbHostStore::open(&path)?;
         store.create_session(CreateSession {
             session: "ahp-session:/state".into(),

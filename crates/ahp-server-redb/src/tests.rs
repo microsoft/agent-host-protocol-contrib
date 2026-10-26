@@ -29,9 +29,7 @@ struct TestStore {
 
 impl TestStore {
     fn new() -> Result<Self, RedbStoreError> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(format!("ahp-server-redb-{}.redb", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("ahp-server-redb-{}.redb", Uuid::new_v4()));
         Ok(Self {
             store: RedbHostStore::open(&path)?,
             path,
