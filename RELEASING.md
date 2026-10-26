@@ -51,13 +51,15 @@ is stored in this repository.
    git push origin conformance/v0.0.1
    ```
 
-5. The tag-triggered Azure DevOps run validates the tag against the package
-   version and checks for its changelog entry, then builds and tests the artifact.
-6. Manually queue the matching Azure DevOps pipeline, selecting that same release
-   tag, and complete its approval gates. The shared template only permits npm
-   `latest` publication when `Build.Reason` is `Manual`; tag-triggered runs do
-   not publish. The manual run repeats validation/build/tests before publishing
-   through ESRP.
+5. Manually queue the matching Azure DevOps pipeline, selecting that same release
+   tag, and complete its approval gates. The run validates the tag against the
+   package version and checks for its changelog entry, then builds and tests the
+   artifact before publishing through ESRP.
+
+Both publishing pipelines are manual-only (`trigger: none`, `pr: none`).
+Pushing branches or tags and opening pull requests does not start them.
+The shared template also requires `Build.Reason` to be `Manual` to publish
+the npm `latest` tag.
 
 Manual Azure DevOps runs can also publish the selected branch's package version
 after validation; selecting the release tag is preferred for reproducibility.
