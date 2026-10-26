@@ -1,0 +1,85 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    exclude:
+      - "*"
+  tags:
+    include:
+      - conformance/v*
+pr: none
+
+resources:
+  repositories:
+    - repository: templates
+      type: github
+      name: microsoft/vscode-engineering
+      ref: main
+      endpoint: Monaco
+
+extends:
+  template: azure-pipelines/npm-package/pipeline.yml@templates
+  parameters:
+    npmPackages:
+      - name: agent-host-protocol-conformance
+        workingDirectory: tools/ahp-conformance
+        nodeVersion: 24.x
+        ghCreateTag: false
+        ghTagPrefix: conformance/v
+        tag: latest
+        # The shared template only publishes latest on manually queued runs.
+        publishPackage: true
+        skipAPIScan: true
+
+        buildSteps:
+          - bash: |
+              set -euo pipefail
+              REF="$(Build.SourceBranch)"
+              PKG_VERSION=$(node -p "require('./tools/ahp-conformance/package.json').version")
+              if ! grep -qF "## [$PKG_VERSION]" tools/ahp-conformance/CHANGELOG.md; then
+                echo "##vso[task.logissue type=error]tools/ahp-conformance/CHANGELOG.md is missing a release entry for $PKG_VERSION."
+                exit 1
+              fi
+              case "$REF" in
+                refs/tags/conformance/v*)
+                  TAG_VERSION="${REF#refs/tags/conformance/v}"
+                  if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+                    echo "##vso[task.logissue type=error]Tag version ($TAG_VERSION) does not match tools/ahp-conformance/package.json version ($PKG_VERSION)."
+                    exit 1
+                  fi
+                  ;;
+                refs/tags/*)
+                  echo "##vso[task.logissue type=error]The conformance pipeline only accepts conformance/vX.Y.Z release tags."
+                  exit 1
+                  ;;
+                *)
+                  echo "Manual conformance release of $PKG_VERSION."
+                  ;;
+              esac
+            displayName: Verify release version and changelog
+
+          - script: npm ci
+            workingDirectory: tools/ahp-conformance
+            displayName: Install conformance dependencies
+
+          - script: npm run build
+            workingDirectory: tools/ahp-conformance
+            displayName: Build conformance CLI and reporting assets
+
+        testPlatforms:
+          - name: Linux
+            nodeVersions:
+              - 24.x
+
+        testSteps:
+          - script: npm ci
+            workingDirectory: tools/ahp-conformance
+            displayName: Install conformance dependencies
+
+          - script: npm run typecheck
+            workingDirectory: tools/ahp-conformance
+            displayName: Typecheck conformance suite
+
+          - script: npm test
+            workingDirectory: tools/ahp-conformance
+            displayName: Test conformance harness and installed npm artifact

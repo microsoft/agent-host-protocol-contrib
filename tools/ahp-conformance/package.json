@@ -1,21 +1,37 @@
 {
-  "name": "ahp-conformance",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@microsoft/agent-host-protocol-conformance",
+  "version": "0.0.1",
   "description": "Black-box Agent Host Protocol conformance suite with live HTML and CLI reporting.",
   "license": "MIT",
+  "author": "Microsoft Corporation",
+  "homepage": "https://github.com/microsoft/agent-host-protocol-samples/tree/main/tools/ahp-conformance",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/microsoft/agent-host-protocol-samples.git",
+    "directory": "tools/ahp-conformance"
+  },
+  "bugs": {
+    "url": "https://github.com/microsoft/agent-host-protocol-samples/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=24"
   },
   "bin": {
-    "ahp-conformance": "./src/cli.ts"
+    "ahp-conformance": "./dist/cli.js"
+  },
+  "files": ["dist", "conformance.schema.json", "examples", "README.md", "CHANGELOG.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "start": "node src/cli.ts",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "typecheck": "tsc",
+    "pretest": "npm run build",
     "test": "node --test \"test/**/*.test.ts\"",
-    "schema": "node src/config/generate-schema.ts"
+    "schema": "node src/config/generate-schema.ts",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@microsoft/agent-host-protocol": "^1.0.0",

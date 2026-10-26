@@ -4,7 +4,8 @@ A black-box [Agent Host Protocol](https://microsoft.github.io/agent-host-protoco
 conformance CLI. It discovers the host's advertised agent/model and capabilities,
 then exercises transport, sessions, chats, resources, tools, authentication,
 terminals, automations, and telemetry.
-Node **24+** runs the TypeScript directly; there is no build step.
+Node **24+** is required. Development runs TypeScript directly; the npm package
+ships compiled JavaScript and the HTML reporter assets.
 
 Tests target the **released specification matching the installed SDK**, currently
 AHP **1.0.0** (`@microsoft/agent-host-protocol` 1.0.0). Protocol HEAD is not the
@@ -19,6 +20,18 @@ the protocol repository's `main` at the revision pinned in
 `src/harness/proposed.ts`) and skip on hosts that don't implement the feature.
 
 ## Quick start
+
+Once version `0.0.1` is published:
+
+```sh
+npm install --global @microsoft/agent-host-protocol-conformance
+ahp-conformance --init
+# Edit ahp-conformance.yml: set target.url to your host's AHP WebSocket endpoint.
+ahp-conformance
+ahp-conformance --list
+```
+
+From a checkout (no build step required):
 
 ```sh
 cd tools/ahp-conformance
@@ -107,7 +120,8 @@ node src/cli.ts examples/advanced-workspace-host.yml
 The [example](examples/advanced-workspace-host.yml) launches the repository's
 Rust advanced workspace host on port 18787 with its internal deterministic
 fixture. Cargo and the sample's frontend prerequisites must be installed; the
-first build may require a larger `host.readyTimeoutMs`.
+first build may require a larger `host.readyTimeoutMs`. This example requires a
+samples checkout; it is not a standalone installed-package host.
 
 ### VS Code agent host
 
@@ -149,4 +163,8 @@ waiters, `t.defer()` cleanup, and `src/harness/assert.ts` for assertions. Call
 shared prompts in `src/harness/prompts.ts` for model tasks; fixture-only directives
 must require `requires.deterministicModel`. Every frame is recorded automatically.
 
-Development: `npm run typecheck`, `npm test`. No emitted JavaScript is needed.
+Development: `npm run typecheck`, `npm test`. Tests build and verify an installed
+npm artifact, including configuration generation and HTML reporting.
+`npm run build` compiles into `dist/` and copies the HTML reporter assets;
+`npm pack` builds automatically. Direct `node src/cli.ts` development runs
+remain supported. See [release instructions](../../RELEASING.md).

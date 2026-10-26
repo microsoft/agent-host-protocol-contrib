@@ -119,6 +119,24 @@ for endpoints without a model catalog.
 
 ## Test tools and validation
 
+The TypeScript tools are independently published npm packages:
+
+| Package | Executable | Guide |
+| --- | --- | --- |
+| `@microsoft/agent-host-protocol-cli` | `ahp` | [Host inspection, capture/replay, and persistent session controllers](tools/ahp-cli/README.md) |
+| `@microsoft/agent-host-protocol-conformance` | `ahp-conformance` | [Black-box protocol conformance tests](tools/ahp-conformance/README.md) |
+
+Both start at version `0.0.1`. After publication:
+
+```bash
+npm install --global @microsoft/agent-host-protocol-cli @microsoft/agent-host-protocol-conformance
+ahp describe
+ahp-conformance --init
+```
+
+The CLI requires Node 22+; conformance requires Node 24+.
+See [RELEASING.md](RELEASING.md) for the Azure DevOps publishing pipelines.
+
 [`deterministic-openai`](tools/deterministic-openai/README.md) supplies
 versioned text/error and tool fixtures, including v4 recall/read-file/write-file
 directives. The Node 24+ TypeScript

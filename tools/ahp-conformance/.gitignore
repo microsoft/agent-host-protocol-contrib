@@ -1,3 +1,4 @@
 node_modules/
+dist/
 ahp-conformance-report.html
 ahp-conformance-results.json
